@@ -223,6 +223,9 @@ function dbToLoan(row){
     remainingPrincipal: Number(row.remaining_principal),
     monthlyPayment: row.monthly_payment!=null ? Number(row.monthly_payment) : null,
     interestRate: row.interest_rate!=null ? Number(row.interest_rate) : null,
+    currentInstallment: row.current_installment,
+    totalInstallments: row.total_installments,
+    lastPaymentDate: row.last_payment_date,
     type: row.type, memo: row.memo,
   };
 }
@@ -233,6 +236,9 @@ function loanToDb(l){
     remaining_principal: l.remainingPrincipal,
     monthly_payment: l.monthlyPayment||null,
     interest_rate: l.interestRate||null,
+    current_installment: l.currentInstallment||null,
+    total_installments: l.totalInstallments||null,
+    last_payment_date: l.lastPaymentDate||null,
     type: l.type||'joint', memo: l.memo||null,
     updated_at: new Date().toISOString(),
   };
@@ -993,7 +999,9 @@ function CsvUpload({categories, onImport}){
 
 function LoanModal({onClose, onSave, initial}){
   const [form,setForm]=useState(initial ? {...initial} : {
-    name:'', originalPrincipal:'', remainingPrincipal:'', monthlyPayment:'', interestRate:'', type:'joint', memo:''
+    name:'', originalPrincipal:'', remainingPrincipal:'', monthlyPayment:'', interestRate:'',
+    currentInstallment:'', totalInstallments:'', lastPaymentDate:'',
+    type:'joint', memo:''
   });
   function update(k,v){ setForm(f=>({...f,[k]:v})); }
   function submit(){
@@ -1005,6 +1013,9 @@ function LoanModal({onClose, onSave, initial}){
       remainingPrincipal: Number(form.remainingPrincipal),
       monthlyPayment: form.monthlyPayment ? Number(form.monthlyPayment) : null,
       interestRate: form.interestRate ? Number(form.interestRate) : null,
+      currentInstallment: form.currentInstallment ? Number(form.currentInstallment) : null,
+      totalInstallments: form.totalInstallments ? Number(form.totalInstallments) : null,
+      lastPaymentDate: form.lastPaymentDate || null,
       type: form.type,
       memo: form.memo,
     });
@@ -1037,6 +1048,20 @@ function LoanModal({onClose, onSave, initial}){
             <label>금리 % (선택)</label>
             <input type="number" step="0.01" placeholder="3.5" value={form.interestRate} onChange={e=>update('interestRate',e.target.value)}/>
           </div>
+        </div>
+        <div className="row-2">
+          <div className="field">
+            <label>총 상환 회차 (선택)</label>
+            <input type="number" min="1" placeholder="예: 360" value={form.totalInstallments} onChange={e=>update('totalInstallments',e.target.value)}/>
+          </div>
+          <div className="field">
+            <label>현재 몇 회차 (선택)</label>
+            <input type="number" min="1" placeholder="예: 7" value={form.currentInstallment} onChange={e=>update('currentInstallment',e.target.value)}/>
+          </div>
+        </div>
+        <div className="field">
+          <label>마지막 납입일 (선택)</label>
+          <input type="date" value={form.lastPaymentDate||''} onChange={e=>update('lastPaymentDate',e.target.value)}/>
         </div>
         <div className="field">
           <label>공동 / 개인</label>
@@ -1131,6 +1156,12 @@ function Loans({loans, onAdd, onEdit, onDelete}){
                   <p className="stat-value" style={{fontSize:18}}>{l.monthlyPayment?fmtWon(l.monthlyPayment):'—'}</p>
                 </div>
               </div>
+              {(l.currentInstallment || l.lastPaymentDate) && (
+                <p style={{fontSize:12,color:'var(--ink-soft)',marginBottom:8}}>
+                  {l.currentInstallment && l.totalInstallments ? `${l.currentInstallment}/${l.totalInstallments}회` : (l.currentInstallment ? `${l.currentInstallment}회차` : '')}
+                  {l.lastPaymentDate ? ` · 마지막 납입 ${l.lastPaymentDate}` : ''}
+                </p>
+              )}
               <div style={{height:8,background:'var(--line)',borderRadius:99}}>
                 <div style={{height:8,width:paidRatio+'%',background:'var(--joint)',borderRadius:99}}></div>
               </div>
