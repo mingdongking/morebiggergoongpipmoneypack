@@ -11,6 +11,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <style>
   :root{
@@ -177,7 +178,7 @@ const DEFAULT_CATEGORIES = [
   {id:'etc',name:'기타',type:'personal',keywords:[]},
 ];
 
-const WHO_OPTIONS = ['민경','배우자'];
+const WHO_OPTIONS = ['민경','희동'];
 
 // ---- 로컬 폴백 (Supabase 미설정 시 지금까지처럼 브라우저 저장) ----
 function loadLocal(){
@@ -251,7 +252,7 @@ function Sidebar({tab,setTab}){
   const items=[
     {id:'dashboard',label:'대시보드'},
     {id:'transactions',label:'거래 내역'},
-    {id:'csv',label:'CSV 업로드'},
+    {id:'csv',label:'CSV/엑셀 업로드'},
     {id:'categories',label:'카테고리 설정'},
   ];
   return (
@@ -513,31 +514,69 @@ function Transactions({transactions, categories, onAdd, onEdit, onDelete}){
 }
 
 function CsvUpload({categories, onImport}){
+  const [rawFile,setRawFile]=useState(null);
+  const [encoding,setEncoding]=useState('utf-8');
+  const [skipRows,setSkipRows]=useState(0);
+  const [garbledWarning,setGarbledWarning]=useState(false);
   const [rows,setRows]=useState(null); // raw parsed rows
   const [headers,setHeaders]=useState([]);
   const [mapping,setMapping]=useState({date:'',amount:'',desc:''});
   const [preview,setPreview]=useState([]);
   const fileRef = useRef(null);
 
+  function parseWithSettings(file, enc, skip){
+    const isExcel = /\.(xlsx|xls)$/i.test(file.name);
+    const reader = new FileReader();
+    reader.onload = (e)=>{
+      let text;
+      if(isExcel){
+        try{
+          const wb = XLSX.read(e.target.result, {type:'array'});
+          const sheet = wb.Sheets[wb.SheetNames[0]];
+          text = XLSX.utils.sheet_to_csv(sheet);
+          setGarbledWarning(false);
+        }catch(err){
+          alert('엑셀 파일을 읽는 중 문제가 발생했어요. 파일이 손상되지 않았는지 확인해주세요.');
+          return;
+        }
+      }else{
+        try{ text = new TextDecoder(enc).decode(e.target.result); }
+        catch(err){ text = new TextDecoder('utf-8').decode(e.target.result); }
+        const garbledCount = (text.match(/\uFFFD/g)||[]).length;
+        setGarbledWarning(garbledCount > 3);
+      }
+
+      const lines = text.split(/\r\n|\n|\r/);
+      const sliced = lines.slice(skip).join('\n');
+
+      Papa.parse(sliced, {
+        header:true,
+        skipEmptyLines:true,
+        complete: (res)=>{
+          const fields = res.meta.fields||[];
+          setHeaders(fields);
+          setRows(res.data);
+          const guess = (cands)=> fields.find(f=>cands.some(c=>f.includes(c))) || '';
+          setMapping({
+            date: guess(['날짜','일자','date','Date','거래일']),
+            amount: guess(['금액','출금','amount','Amount','승인금액','이용금액']),
+            desc: guess(['내용','가맹점','적요','description','Description','가맹점명'])
+          });
+        }
+      });
+    };
+    reader.readAsArrayBuffer(file);
+  }
+
   function handleFile(e){
     const file = e.target.files[0];
     if(!file) return;
-    Papa.parse(file, {
-      header:true,
-      skipEmptyLines:true,
-      complete: (res)=>{
-        setHeaders(res.meta.fields||[]);
-        setRows(res.data);
-        // naive auto-guess mapping
-        const fields = res.meta.fields||[];
-        const guess = (cands)=> fields.find(f=>cands.some(c=>f.includes(c))) || '';
-        setMapping({
-          date: guess(['날짜','일자','date','Date']),
-          amount: guess(['금액','출금','amount','Amount']),
-          desc: guess(['내용','가맹점','적요','description','Description'])
-        });
-      }
-    });
+    setRawFile(file);
+    parseWithSettings(file, encoding, skipRows);
+  }
+
+  function reparse(){
+    if(rawFile) parseWithSettings(rawFile, encoding, skipRows);
   }
 
   function buildPreview(){
@@ -572,26 +611,51 @@ function CsvUpload({categories, onImport}){
       date:r.date, amount:r.amount, categoryId:r.categoryId, type:r.type, who:r.who, memo:r.desc, source:'csv'
     }));
     onImport(toImport);
-    setRows(null); setPreview([]); setHeaders([]);
+    setRows(null); setPreview([]); setHeaders([]); setRawFile(null);
     if(fileRef.current) fileRef.current.value='';
   }
 
   return (
     <div>
-      <h1 className="page-title">CSV 업로드</h1>
-      <p className="subtitle">은행/카드 CSV를 업로드하고 컬럼을 매핑하면, 이후엔 같은 형식을 자동 인식해요.</p>
+      <h1 className="page-title">CSV / 엑셀 업로드</h1>
+      <p className="subtitle">은행/카드 CSV나 엑셀(xlsx)을 업로드하고 컬럼을 매핑하면, 이후엔 같은 형식을 자동 인식해요.</p>
 
       {!rows && (
         <div className="card" style={{textAlign:'center',padding:'44px 20px'}}>
-          <p className="display" style={{fontSize:17,marginBottom:8}}>CSV 파일을 선택하세요</p>
-          <p style={{fontSize:13,color:'var(--ink-soft)',marginBottom:18}}>은행/카드사 어디서 받은 파일이든 괜찮아요. 컬럼 매핑은 다음 단계에서 해요.</p>
-          <input ref={fileRef} type="file" accept=".csv" onChange={handleFile} style={{maxWidth:280,margin:'0 auto'}}/>
+          <p className="display" style={{fontSize:17,marginBottom:8}}>CSV 또는 엑셀 파일을 선택하세요</p>
+          <p style={{fontSize:13,color:'var(--ink-soft)',marginBottom:18}}>카드사 "이용내역" 다운로드는 보통 엑셀(xlsx)로 나와요 — 그대로 올리시면 돼요.</p>
+          <input ref={fileRef} type="file" accept=".csv,.xlsx,.xls" onChange={handleFile} style={{maxWidth:280,margin:'0 auto'}}/>
+          <div className="row-2" style={{maxWidth:360,margin:'22px auto 0',textAlign:'left'}}>
+            <div className="field" style={{marginBottom:0}}>
+              <label>인코딩 (CSV만 해당)</label>
+              <select value={encoding} onChange={e=>{setEncoding(e.target.value); if(rawFile) parseWithSettings(rawFile, e.target.value, skipRows);}}>
+                <option value="utf-8">UTF-8 (기본)</option>
+                <option value="euc-kr">EUC-KR (구형 은행/카드 CSV)</option>
+              </select>
+            </div>
+            <div className="field" style={{marginBottom:0}}>
+              <label>상단 건너뛸 줄 수</label>
+              <input type="number" min="0" value={skipRows} onChange={e=>{const v=Number(e.target.value)||0; setSkipRows(v); if(rawFile) parseWithSettings(rawFile, encoding, v);}}/>
+            </div>
+          </div>
+          <p style={{fontSize:11.5,color:'var(--ink-soft)',marginTop:10}}>카드/은행 명세서는 표 위에 안내 문구가 몇 줄 있는 경우가 많아요. CSV인데 글자가 깨지면 인코딩을 EUC-KR로 바꿔보세요.</p>
         </div>
       )}
 
       {rows && preview.length===0 && (
         <div className="card">
           <p className="stat-label" style={{marginBottom:12}}>컬럼 매핑 ({headers.length}개 컬럼 인식됨)</p>
+          {garbledWarning && (
+            <div style={{background:'var(--gold-soft)',border:'1px solid var(--gold)',borderRadius:10,padding:'10px 12px',marginBottom:14,fontSize:12.5,color:'#8a6d10'}}>
+              글자가 깨져 보이면 인코딩이 안 맞는 걸 수 있어요. 아래에서 EUC-KR로 바꿔서 다시 읽어보세요.
+              <div style={{display:'flex',gap:8,marginTop:8}}>
+                <select value={encoding} onChange={e=>{setEncoding(e.target.value); parseWithSettings(rawFile, e.target.value, skipRows);}} style={{width:'auto'}}>
+                  <option value="utf-8">UTF-8</option>
+                  <option value="euc-kr">EUC-KR</option>
+                </select>
+              </div>
+            </div>
+          )}
           <div className="row-2" style={{marginBottom:12}}>
             <div className="field">
               <label>날짜 컬럼</label>
@@ -615,8 +679,12 @@ function CsvUpload({categories, onImport}){
               {headers.map(h=><option key={h} value={h}>{h}</option>)}
             </select>
           </div>
+          <div className="field" style={{maxWidth:220}}>
+            <label>상단 건너뛸 줄 수 (헤더가 안 맞으면 조정)</label>
+            <input type="number" min="0" value={skipRows} onChange={e=>{const v=Number(e.target.value)||0; setSkipRows(v); parseWithSettings(rawFile, encoding, v);}}/>
+          </div>
           <div style={{display:'flex',justifyContent:'flex-end',gap:8,marginTop:16}}>
-            <button className="btn-ghost" onClick={()=>{setRows(null);setHeaders([]);}}>취소</button>
+            <button className="btn-ghost" onClick={()=>{setRows(null);setHeaders([]);setRawFile(null);}}>취소</button>
             <button className="btn-primary" disabled={!mapping.date||!mapping.amount} onClick={buildPreview}>미리보기</button>
           </div>
         </div>
@@ -664,7 +732,7 @@ function CsvUpload({categories, onImport}){
             </table>
           </div>
           <div style={{display:'flex',justifyContent:'flex-end',gap:8,marginTop:16}}>
-            <button className="btn-ghost" onClick={()=>{setRows(null);setPreview([]);setHeaders([]);}}>취소</button>
+            <button className="btn-ghost" onClick={()=>{setRows(null);setPreview([]);setHeaders([]);setRawFile(null);}}>취소</button>
             <button className="btn-primary" onClick={confirmImport}>{preview.filter(r=>r.include).length}건 가져오기</button>
           </div>
         </div>
