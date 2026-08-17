@@ -223,6 +223,7 @@ function dbToPM(row){
     id:row.id, name:row.name, type:row.type,
     closingDay: row.closing_day, paymentDay: row.payment_day,
     paymentOffsetMonths: row.payment_offset_months!=null ? row.payment_offset_months : 1,
+    linkedAccount: row.linked_account,
     color: row.color, memo: row.memo,
   };
 }
@@ -231,6 +232,7 @@ function pmToDb(p){
     id:p.id, name:p.name, type:p.type,
     closing_day: p.closingDay||null, payment_day: p.paymentDay||null,
     payment_offset_months: p.paymentOffsetMonths!=null ? p.paymentOffsetMonths : 1,
+    linked_account: p.linkedAccount||null,
     color: p.color||null, memo: p.memo||null,
   };
 }
@@ -276,6 +278,31 @@ function loanToDb(l){
     updated_at: new Date().toISOString(),
   };
 }
+function dbToAsset(row){
+  return {
+    id:row.id, name:row.name, assetType:row.type,
+    currentValue: Number(row.current_value),
+    principalInvested: row.principal_invested!=null ? Number(row.principal_invested) : null,
+    asOfDate: row.as_of_date, scope: row.scope, memo: row.memo,
+  };
+}
+function assetToDb(a){
+  return {
+    id:a.id, name:a.name, type:a.assetType,
+    current_value: a.currentValue,
+    principal_invested: a.principalInvested||null,
+    as_of_date: a.asOfDate||null,
+    scope: a.scope||'joint', memo: a.memo||null,
+    updated_at: new Date().toISOString(),
+  };
+}
+function dbToSnapshot(row){
+  return { id:row.id, assetId:row.asset_id, date:row.date, value:Number(row.value) };
+}
+function snapshotToDb(s){
+  return { id:s.id, asset_id:s.assetId, date:s.date, value:s.value };
+}
+const ASSET_TYPE_LABELS = { savings:'예적금', investment:'투자(주식/펀드)', cash:'현금성자산', other:'기타' };
 
 function fmtWon(n){
   const sign = n<0 ? '-' : '';
@@ -327,6 +354,7 @@ function Sidebar({tab,setTab}){
     {id:'dashboard',label:'대시보드'},
     {id:'transactions',label:'거래 내역'},
     {id:'loans',label:'대출 관리'},
+    {id:'assets',label:'저축/투자 관리'},
     {id:'paymentMethods',label:'결제수단 관리'},
     {id:'csv',label:'CSV/엑셀 업로드'},
     {id:'categories',label:'카테고리 설정'},
@@ -478,7 +506,7 @@ function AddTransactionModal({categories, paymentMethods, onClose, onSave, initi
   );
 }
 
-function Dashboard({transactions, categories, loans, paymentMethods}){
+function Dashboard({transactions, categories, loans, paymentMethods, assets}){
   const [viewMode,setViewMode] = useState('purchase'); // 'purchase' | 'billing'
   const now = new Date();
   const curMonth = now.toISOString().slice(0,7);
@@ -683,6 +711,43 @@ function Dashboard({transactions, categories, loans, paymentMethods}){
         </div>
       </div>
 
+      {((assets&&assets.length>0) || (loans&&loans.length>0)) && (
+        <div className="card" style={{marginBottom:20}}>
+          <p className="stat-label" style={{marginBottom:10}}>순자산 (자산 − 대출)</p>
+          <div className="grid-3">
+            <div>
+              <p className="stat-label">총 자산</p>
+              <p className="stat-value" style={{fontSize:19,color:'var(--joint)'}}>{fmtWon((assets||[]).reduce((s,a)=>s+a.currentValue,0))}</p>
+            </div>
+            <div>
+              <p className="stat-label">총 부채(대출)</p>
+              <p className="stat-value" style={{fontSize:19,color:'var(--personal)'}}>{fmtWon((loans||[]).reduce((s,l)=>s+l.remainingPrincipal,0))}</p>
+            </div>
+            <div>
+              <p className="stat-label">순자산</p>
+              <p className="stat-value" style={{fontSize:19}}>{fmtWon((assets||[]).reduce((s,a)=>s+a.currentValue,0) - (loans||[]).reduce((s,l)=>s+l.remainingPrincipal,0))}</p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {assets && assets.length>0 && (
+        <div className="card" style={{marginBottom:20}}>
+          <p className="stat-label" style={{marginBottom:10}}>자산 현황</p>
+          {assets.map(a=>{
+            const ratio = a.principalInvested ? Math.min(Math.max(a.currentValue/a.principalInvested*100,0),200) : null;
+            return (
+              <div key={a.id} style={{marginBottom:9}}>
+                <div style={{display:'flex',justifyContent:'space-between',fontSize:12.5,marginBottom:4}}>
+                  <span>{a.name} <span style={{color:'var(--ink-soft)'}}>({ASSET_TYPE_LABELS[a.assetType]||a.assetType})</span></span>
+                  <span className="mono">{fmtWon(a.currentValue)}</span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
       {loans && loans.length>0 && (
         <div className="card" style={{marginBottom:20}}>
           <p className="stat-label" style={{marginBottom:10}}>대출 현황</p>
@@ -759,29 +824,68 @@ function Transactions({transactions, categories, paymentMethods, onAdd, onEdit, 
   const [filterWho,setFilterWho]=useState('all');
   const [filterFlow,setFilterFlow]=useState('all');
   const [filterPM,setFilterPM]=useState('all');
+  const [datePreset,setDatePreset]=useState('all');
+  const [dateFrom,setDateFrom]=useState('');
+  const [dateTo,setDateTo]=useState('');
 
   const catName = id => categories.find(c=>c.id===id)?.name || id;
   const pmName = id => (paymentMethods||[]).find(p=>p.id===id)?.name || null;
+
+  function presetRange(preset){
+    const now = new Date();
+    const y = now.getFullYear(), m = now.getMonth();
+    const fmt = d => d.toISOString().slice(0,10);
+    if(preset==='thisMonth') return {from:fmt(new Date(y,m,1)), to:fmt(new Date(y,m+1,0))};
+    if(preset==='lastMonth') return {from:fmt(new Date(y,m-1,1)), to:fmt(new Date(y,m,0))};
+    if(preset==='last3') return {from:fmt(new Date(y,m-2,1)), to:fmt(new Date(y,m+1,0))};
+    if(preset==='last6') return {from:fmt(new Date(y,m-5,1)), to:fmt(new Date(y,m+1,0))};
+    if(preset==='thisYear') return {from:fmt(new Date(y,0,1)), to:fmt(new Date(y,11,31))};
+    return {from:'', to:''};
+  }
+  const activeRange = datePreset==='custom' ? {from:dateFrom, to:dateTo} : presetRange(datePreset);
 
   const filtered = transactions.filter(t=>
     (filterCat==='all'||t.categoryId===filterCat) &&
     (filterType==='all'||t.type===filterType) &&
     (filterWho==='all'||t.who===filterWho) &&
     (filterFlow==='all'||(t.flow||'expense')===filterFlow) &&
-    (filterPM==='all'||t.paymentMethodId===filterPM)
+    (filterPM==='all'||t.paymentMethodId===filterPM) &&
+    (!activeRange.from || t.date>=activeRange.from) &&
+    (!activeRange.to || t.date<=activeRange.to)
   ).sort((a,b)=>b.date.localeCompare(a.date));
+
+  const periodTotal = filtered.filter(t=>(t.flow||'expense')==='expense').reduce((s,t)=>s+t.amount,0);
 
   return (
     <div>
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:20}}>
         <div>
           <h1 className="page-title">거래 내역</h1>
-          <p className="subtitle" style={{margin:0}}>총 {transactions.length}건</p>
+          <p className="subtitle" style={{margin:0}}>
+            총 {transactions.length}건
+            {datePreset!=='all' && ` · 조회 기간 지출 합계 ${fmtWon(periodTotal)}`}
+          </p>
         </div>
         <button className="btn-primary" onClick={()=>{setEditing(null);setShowModal(true);}}>+ 거래 추가</button>
       </div>
 
       <div className="filter-bar">
+        <select value={datePreset} onChange={e=>setDatePreset(e.target.value)}>
+          <option value="all">전체 기간</option>
+          <option value="thisMonth">이번 달</option>
+          <option value="lastMonth">지난 달</option>
+          <option value="last3">최근 3개월</option>
+          <option value="last6">최근 6개월</option>
+          <option value="thisYear">올해</option>
+          <option value="custom">기간 직접 지정</option>
+        </select>
+        {datePreset==='custom' && (
+          <React.Fragment>
+            <input type="date" value={dateFrom} onChange={e=>setDateFrom(e.target.value)} style={{width:'auto'}}/>
+            <span style={{color:'var(--ink-soft)',fontSize:13}}>~</span>
+            <input type="date" value={dateTo} onChange={e=>setDateTo(e.target.value)} style={{width:'auto'}}/>
+          </React.Fragment>
+        )}
         <select value={filterFlow} onChange={e=>setFilterFlow(e.target.value)}>
           <option value="all">수입/지출 전체</option>
           <option value="expense">지출</option>
@@ -1306,7 +1410,7 @@ function Loans({loans, onAdd, onEdit, onDelete}){
 
 function PaymentMethodModal({onClose, onSave, initial}){
   const [form,setForm]=useState(initial ? {...initial} : {
-    name:'', type:'card', closingDay:'', paymentDay:'', paymentOffsetMonths:1, memo:''
+    name:'', type:'card', closingDay:'', paymentDay:'', paymentOffsetMonths:1, linkedAccount:'', memo:''
   });
   function update(k,v){ setForm(f=>({...f,[k]:v})); }
   function submit(){
@@ -1317,6 +1421,7 @@ function PaymentMethodModal({onClose, onSave, initial}){
       closingDay: form.type==='card' && form.closingDay ? Number(form.closingDay) : null,
       paymentDay: form.type==='card' && form.paymentDay ? Number(form.paymentDay) : null,
       paymentOffsetMonths: form.type==='card' ? Number(form.paymentOffsetMonths) : null,
+      linkedAccount: form.linkedAccount,
       memo: form.memo,
     });
   }
@@ -1355,6 +1460,10 @@ function PaymentMethodModal({onClose, onSave, initial}){
               </div>
             </div>
             <p style={{fontSize:11.5,color:'var(--ink-soft)',marginTop:-8,marginBottom:14}}>예: 매월 말일 마감, 다음달 14일 결제인 카드는 이용마감일 31 / 결제일 14 / 익월 결제로 설정하세요.</p>
+            <div className="field">
+              <label>출금계좌 (선택)</label>
+              <input value={form.linkedAccount} onChange={e=>update('linkedAccount',e.target.value)} placeholder="예: 국민은행 희동 명의 통장"/>
+            </div>
           </React.Fragment>
         )}
         <div className="field">
@@ -1390,6 +1499,9 @@ function PaymentMethods({paymentMethods, onAdd, onEdit, onDelete}){
               {p.type==='card' && p.closingDay && p.paymentDay && (
                 <span style={{color:'var(--ink-soft)',fontWeight:400,fontSize:12}}> · 마감 매월 {p.closingDay}일 → 결제 {p.paymentOffsetMonths?'익월':'당월'} {p.paymentDay}일</span>
               )}
+              {p.linkedAccount && (
+                <span style={{color:'var(--ink-soft)',fontWeight:400,fontSize:12}}> · 출금계좌: {p.linkedAccount}</span>
+              )}
             </span>
             <span className={"pill "+(p.type==='card'?'joint':'personal')}>{p.type==='card'?'카드':'현금'}</span>
             {p.id!=='cash' && (
@@ -1406,6 +1518,216 @@ function PaymentMethods({paymentMethods, onAdd, onEdit, onDelete}){
           initial={editing}
           onClose={()=>setShowModal(false)}
           onSave={(p)=>{ editing?onEdit(p):onAdd(p); setShowModal(false); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function AssetModal({onClose, onSave, initial}){
+  const [form,setForm]=useState(initial ? {...initial} : {
+    name:'', assetType:'savings', currentValue:'', principalInvested:'', asOfDate: todayISO(), scope:'joint', memo:''
+  });
+  function update(k,v){ setForm(f=>({...f,[k]:v})); }
+  function submit(){
+    if(!form.name || form.currentValue==='') return;
+    onSave({
+      id: initial?initial.id:'asset_'+Date.now()+Math.random().toString(36).slice(2,7),
+      name: form.name, assetType: form.assetType,
+      currentValue: Number(form.currentValue),
+      principalInvested: form.principalInvested!=='' ? Number(form.principalInvested) : null,
+      asOfDate: form.asOfDate || todayISO(),
+      scope: form.scope, memo: form.memo,
+    });
+  }
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" onClick={e=>e.stopPropagation()}>
+        <h2>{initial?'자산 정보 수정':'자산 추가'}</h2>
+        <div className="field">
+          <label>이름</label>
+          <input value={form.name} onChange={e=>update('name',e.target.value)} placeholder="예: 청약저축, 삼성전자 주식, 비상금 통장"/>
+        </div>
+        <div className="field">
+          <label>종류</label>
+          <select value={form.assetType} onChange={e=>update('assetType',e.target.value)}>
+            {Object.entries(ASSET_TYPE_LABELS).map(([k,v])=><option key={k} value={k}>{v}</option>)}
+          </select>
+        </div>
+        <div className="row-2">
+          <div className="field">
+            <label>현재 평가금액/잔액</label>
+            <input type="number" placeholder="10000000" value={form.currentValue} onChange={e=>update('currentValue',e.target.value)}/>
+          </div>
+          <div className="field">
+            <label>기준일</label>
+            <input type="date" value={form.asOfDate} onChange={e=>update('asOfDate',e.target.value)}/>
+          </div>
+        </div>
+        <div className="field">
+          <label>총 납입/투자 원금 (선택 — 수익률 계산용)</label>
+          <input type="number" placeholder="9000000" value={form.principalInvested} onChange={e=>update('principalInvested',e.target.value)}/>
+        </div>
+        <div className="field">
+          <label>공동 / 개인</label>
+          <div className="toggle-row">
+            <button type="button" className={"toggle-btn"+(form.scope==='joint'?' active-joint':'')} onClick={()=>update('scope','joint')}>공동</button>
+            <button type="button" className={"toggle-btn"+(form.scope==='personal'?' active-personal':'')} onClick={()=>update('scope','personal')}>개인</button>
+          </div>
+        </div>
+        <div className="field">
+          <label>메모</label>
+          <input value={form.memo} onChange={e=>update('memo',e.target.value)} placeholder="선택 입력"/>
+        </div>
+        <p style={{fontSize:11.5,color:'var(--ink-soft)',marginTop:-8,marginBottom:14}}>저장하면 이 기준일/금액이 히스토리에 기록으로 남아요. 매달 업데이트하면 자산이 어떻게 늘어왔는지 추적할 수 있어요.</p>
+        <div style={{display:'flex',justifyContent:'flex-end',gap:8,marginTop:8}}>
+          <button className="btn-ghost" onClick={onClose}>취소</button>
+          <button className="btn-primary" onClick={submit}>저장</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SnapshotModal({onClose, onSave, assetName}){
+  const [date,setDate]=useState(todayISO());
+  const [value,setValue]=useState('');
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" onClick={e=>e.stopPropagation()}>
+        <h2>과거 기록 추가</h2>
+        <p style={{fontSize:12.5,color:'var(--ink-soft)',marginTop:-8,marginBottom:14}}>"{assetName}"의 특정 시점 잔액을 히스토리에 기록해요 (현재 값은 안 바뀌어요).</p>
+        <div className="row-2">
+          <div className="field">
+            <label>날짜</label>
+            <input type="date" value={date} onChange={e=>setDate(e.target.value)}/>
+          </div>
+          <div className="field">
+            <label>그 시점 금액</label>
+            <input type="number" value={value} onChange={e=>setValue(e.target.value)}/>
+          </div>
+        </div>
+        <div style={{display:'flex',justifyContent:'flex-end',gap:8,marginTop:8}}>
+          <button className="btn-ghost" onClick={onClose}>취소</button>
+          <button className="btn-primary" onClick={()=>{ if(date&&value!=='') onSave({date, value:Number(value)}); }}>저장</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Assets({assets, snapshots, onAdd, onEdit, onDelete, onAddSnapshot}){
+  const [showModal,setShowModal]=useState(false);
+  const [editing,setEditing]=useState(null);
+  const [snapshotFor,setSnapshotFor]=useState(null);
+
+  const totalAssets = assets.reduce((s,a)=>s+a.currentValue,0);
+  const totalPrincipal = assets.reduce((s,a)=>s+(a.principalInvested||0),0);
+
+  const snapshotsFor = (assetId) => (snapshots||[]).filter(s=>s.assetId===assetId).sort((a,b)=>b.date.localeCompare(a.date));
+
+  return (
+    <div>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:20}}>
+        <div>
+          <h1 className="page-title">저축/투자 관리</h1>
+          <p className="subtitle" style={{margin:0}}>예적금, 주식, 비상금 등 우리 자산의 흐름을 추적해요</p>
+        </div>
+        <button className="btn-primary" onClick={()=>{setEditing(null);setShowModal(true);}}>+ 자산 추가</button>
+      </div>
+
+      {assets.length>0 && (
+        <div className="grid-3" style={{marginBottom:20}}>
+          <div className="card">
+            <p className="stat-label">총 자산</p>
+            <p className="stat-value" style={{color:'var(--joint)'}}>{fmtWon(totalAssets)}</p>
+          </div>
+          <div className="card">
+            <p className="stat-label">총 납입 원금</p>
+            <p className="stat-value">{totalPrincipal>0?fmtWon(totalPrincipal):'—'}</p>
+          </div>
+          <div className="card">
+            <p className="stat-label">평가손익</p>
+            <p className="stat-value" style={{color: (totalAssets-totalPrincipal)>=0?'var(--joint)':'var(--danger)'}}>
+              {totalPrincipal>0 ? fmtWon(totalAssets-totalPrincipal) : '—'}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {assets.length===0 ? (
+        <div className="card">
+          <div className="empty">
+            <p className="display">등록된 자산이 없어요</p>
+            <p style={{fontSize:13}}>예적금, 주식, 비상금 통장 등을 추가해서 자산이 늘어나는 걸 추적해보세요.</p>
+          </div>
+        </div>
+      ) : (
+        assets.map(a=>{
+          const gain = a.principalInvested ? a.currentValue - a.principalInvested : null;
+          const gainPct = a.principalInvested ? (gain/a.principalInvested*100) : null;
+          const hist = snapshotsFor(a.id);
+          return (
+            <div key={a.id} className="card" style={{marginBottom:14}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:10}}>
+                <div>
+                  <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+                    <span style={{fontWeight:600,fontSize:14.5}}>{a.name}</span>
+                    <span className="pill gold" style={{background:'var(--gold-soft)',color:'#8a6d10'}}>{ASSET_TYPE_LABELS[a.assetType]||a.assetType}</span>
+                    <span className={"pill "+a.scope}>{a.scope==='joint'?'공동':'개인'}</span>
+                  </div>
+                  {a.memo && <p style={{fontSize:12,color:'var(--ink-soft)',marginTop:4}}>{a.memo}</p>}
+                </div>
+                <div style={{display:'flex',gap:4,whiteSpace:'nowrap'}}>
+                  <button className="btn-icon" onClick={()=>setSnapshotFor(a)}>기록 추가</button>
+                  <button className="btn-icon" onClick={()=>{setEditing(a);setShowModal(true);}}>수정</button>
+                  <button className="btn-icon" onClick={()=>{ if(window.confirm('이 자산을 삭제할까요? 기록된 히스토리도 함께 삭제돼요.')) onDelete(a.id); }}>삭제</button>
+                </div>
+              </div>
+              <div className="grid-3" style={{marginBottom:10}}>
+                <div>
+                  <p className="stat-label">현재 평가금액{a.asOfDate?` (${a.asOfDate} 기준)`:''}</p>
+                  <p className="stat-value" style={{fontSize:18,color:'var(--joint)'}}>{fmtWon(a.currentValue)}</p>
+                </div>
+                <div>
+                  <p className="stat-label">납입 원금</p>
+                  <p className="stat-value" style={{fontSize:18}}>{a.principalInvested?fmtWon(a.principalInvested):'—'}</p>
+                </div>
+                <div>
+                  <p className="stat-label">평가손익</p>
+                  <p className="stat-value" style={{fontSize:18,color:gain==null?'var(--ink)':(gain>=0?'var(--joint)':'var(--danger)')}}>
+                    {gain==null?'—':`${gain>=0?'+':''}${fmtWon(gain)} (${gainPct.toFixed(1)}%)`}
+                  </p>
+                </div>
+              </div>
+              {hist.length>0 && (
+                <div style={{marginTop:10}}>
+                  <p className="stat-label" style={{marginBottom:6}}>최근 기록</p>
+                  {hist.slice(0,5).map(s=>(
+                    <div key={s.id} style={{display:'flex',justifyContent:'space-between',fontSize:12.5,padding:'4px 0',borderBottom:'1px solid var(--line)'}}>
+                      <span className="mono">{s.date}</span>
+                      <span className="mono">{fmtWon(s.value)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })
+      )}
+
+      {showModal && (
+        <AssetModal
+          initial={editing}
+          onClose={()=>setShowModal(false)}
+          onSave={(a)=>{ editing?onEdit(a):onAdd(a); setShowModal(false); }}
+        />
+      )}
+      {snapshotFor && (
+        <SnapshotModal
+          assetName={snapshotFor.name}
+          onClose={()=>setSnapshotFor(null)}
+          onSave={({date,value})=>{ onAddSnapshot(snapshotFor.id, date, value); setSnapshotFor(null); }}
         />
       )}
     </div>
@@ -1474,7 +1796,7 @@ function CategorySettings({categories, setCategories}){
 
 function App(){
   const isOnline = !!supabase;
-  const [state,setState]=useState(isOnline ? {transactions:[], categories:[], loans:[], paymentMethods:[]} : {loans:[], paymentMethods:[], ...loadLocal()});
+  const [state,setState]=useState(isOnline ? {transactions:[], categories:[], loans:[], paymentMethods:[], assets:[], assetSnapshots:[]} : {loans:[], paymentMethods:[], assets:[], assetSnapshots:[], ...loadLocal()});
   const [tab,setTab]=useState('dashboard');
   const [syncStatus,setSyncStatus]=useState(isOnline ? 'connecting' : 'local');
 
@@ -1487,19 +1809,23 @@ function App(){
     let cancelled = false;
 
     async function init(){
-      const [{data:cats, error:catErr}, {data:txs, error:txErr}, {data:loans, error:loanErr}, {data:pms, error:pmErr}] = await Promise.all([
+      const [{data:cats, error:catErr}, {data:txs, error:txErr}, {data:loans, error:loanErr}, {data:pms, error:pmErr}, {data:assets, error:assetErr}, {data:snaps, error:snapErr}] = await Promise.all([
         supabase.from('categories').select('*').order('created_at'),
         supabase.from('transactions').select('*').order('date',{ascending:false}),
         supabase.from('loans').select('*').order('created_at'),
         supabase.from('payment_methods').select('*').order('created_at'),
+        supabase.from('assets').select('*').order('created_at'),
+        supabase.from('asset_snapshots').select('*').order('date'),
       ]);
       if(cancelled) return;
-      if(catErr || txErr || loanErr || pmErr){ console.error(catErr||txErr||loanErr||pmErr); setSyncStatus('error'); return; }
+      if(catErr || txErr || loanErr || pmErr || assetErr || snapErr){ console.error(catErr||txErr||loanErr||pmErr||assetErr||snapErr); setSyncStatus('error'); return; }
       setState({
         categories: (cats||[]).map(dbToCat),
         transactions: (txs||[]).map(dbToTx),
         loans: (loans||[]).map(dbToLoan),
         paymentMethods: (pms||[]).map(dbToPM),
+        assets: (assets||[]).map(dbToAsset),
+        assetSnapshots: (snaps||[]).map(dbToSnapshot),
       });
       setSyncStatus('live');
     }
@@ -1562,6 +1888,33 @@ function App(){
           }
           if(payload.eventType==='DELETE'){
             return {...s, paymentMethods:s.paymentMethods.filter(p=>p.id!==payload.old.id)};
+          }
+          return s;
+        });
+      })
+      .on('postgres_changes',{event:'*',schema:'public',table:'assets'}, payload=>{
+        setState(s=>{
+          if(payload.eventType==='INSERT'){
+            if(s.assets.some(a=>a.id===payload.new.id)) return s;
+            return {...s, assets:[...s.assets, dbToAsset(payload.new)]};
+          }
+          if(payload.eventType==='UPDATE'){
+            return {...s, assets:s.assets.map(a=>a.id===payload.new.id?dbToAsset(payload.new):a)};
+          }
+          if(payload.eventType==='DELETE'){
+            return {...s, assets:s.assets.filter(a=>a.id!==payload.old.id)};
+          }
+          return s;
+        });
+      })
+      .on('postgres_changes',{event:'*',schema:'public',table:'asset_snapshots'}, payload=>{
+        setState(s=>{
+          if(payload.eventType==='INSERT'){
+            if(s.assetSnapshots.some(sn=>sn.id===payload.new.id)) return s;
+            return {...s, assetSnapshots:[...s.assetSnapshots, dbToSnapshot(payload.new)]};
+          }
+          if(payload.eventType==='DELETE'){
+            return {...s, assetSnapshots:s.assetSnapshots.filter(sn=>sn.id!==payload.old.id)};
           }
           return s;
         });
@@ -1669,14 +2022,54 @@ function App(){
     }
   }
 
+  // ---- 자산 CRUD ----
+  async function addAsset(a){
+    setState(s=>({...s, assets:[...s.assets, a]}));
+    const snap = {id:'snap_'+Date.now()+Math.random().toString(36).slice(2,7), assetId:a.id, date:a.asOfDate, value:a.currentValue};
+    setState(s=>({...s, assetSnapshots:[...s.assetSnapshots, snap]}));
+    if(isOnline){
+      const {error:e1} = await supabase.from('assets').insert([assetToDb(a)]);
+      if(e1) console.error(e1);
+      const {error:e2} = await supabase.from('asset_snapshots').insert([snapshotToDb(snap)]);
+      if(e2) console.error(e2);
+    }
+  }
+  async function editAsset(a){
+    setState(s=>({...s, assets:s.assets.map(x=>x.id===a.id?a:x)}));
+    const snap = {id:'snap_'+Date.now()+Math.random().toString(36).slice(2,7), assetId:a.id, date:a.asOfDate, value:a.currentValue};
+    setState(s=>({...s, assetSnapshots:[...s.assetSnapshots, snap]}));
+    if(isOnline){
+      const {error:e1} = await supabase.from('assets').update(assetToDb(a)).eq('id',a.id);
+      if(e1) console.error(e1);
+      const {error:e2} = await supabase.from('asset_snapshots').insert([snapshotToDb(snap)]);
+      if(e2) console.error(e2);
+    }
+  }
+  async function deleteAsset(id){
+    setState(s=>({...s, assets:s.assets.filter(a=>a.id!==id), assetSnapshots:s.assetSnapshots.filter(sn=>sn.assetId!==id)}));
+    if(isOnline){
+      const {error} = await supabase.from('assets').delete().eq('id',id);
+      if(error) console.error(error);
+    }
+  }
+  async function addAssetSnapshot(assetId, date, value){
+    const snap = {id:'snap_'+Date.now()+Math.random().toString(36).slice(2,7), assetId, date, value};
+    setState(s=>({...s, assetSnapshots:[...s.assetSnapshots, snap]}));
+    if(isOnline){
+      const {error} = await supabase.from('asset_snapshots').insert([snapshotToDb(snap)]);
+      if(error) console.error(error);
+    }
+  }
+
   return (
     <div className="app">
       <Sidebar tab={tab} setTab={setTab}/>
       <div className="main">
         <SyncBadge status={syncStatus}/>
-        {tab==='dashboard' && <Dashboard transactions={state.transactions} categories={state.categories} loans={state.loans} paymentMethods={state.paymentMethods}/>}
+        {tab==='dashboard' && <Dashboard transactions={state.transactions} categories={state.categories} loans={state.loans} paymentMethods={state.paymentMethods} assets={state.assets}/>}
         {tab==='transactions' && <Transactions transactions={state.transactions} categories={state.categories} paymentMethods={state.paymentMethods} onAdd={addTx} onEdit={editTx} onDelete={deleteTx}/>}
         {tab==='loans' && <Loans loans={state.loans} onAdd={addLoan} onEdit={editLoan} onDelete={deleteLoan}/>}
+        {tab==='assets' && <Assets assets={state.assets} snapshots={state.assetSnapshots} onAdd={addAsset} onEdit={editAsset} onDelete={deleteAsset} onAddSnapshot={addAssetSnapshot}/>}
         {tab==='paymentMethods' && <PaymentMethods paymentMethods={state.paymentMethods} onAdd={addPM} onEdit={editPM} onDelete={deletePM}/>}
         {tab==='csv' && <CsvUpload categories={state.categories} paymentMethods={state.paymentMethods} onImport={importTx}/>}
         {tab==='categories' && <CategorySettings categories={state.categories} setCategories={setCategories}/>}
