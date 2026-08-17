@@ -198,6 +198,7 @@ function dbToTx(row){
     id:row.id, date:row.date, amount:Number(row.amount), categoryId:row.category_id, type:row.type, who:row.who, memo:row.memo, source:row.source,
     flow: row.flow || 'expense',
     paymentMethodId: row.payment_method_id || null,
+    recurringExpenseId: row.recurring_expense_id || null,
     isInstallment: !!row.is_installment,
     installmentPrincipal: row.installment_principal!=null ? Number(row.installment_principal) : null,
     installmentTotalMonths: row.installment_total_months,
@@ -209,6 +210,7 @@ function txToDb(t){
     id:t.id, date:t.date, amount:t.amount, category_id:t.flow==='income'?null:t.categoryId, type:t.flow==='income'?null:t.type, who:t.who, memo:t.memo, source:t.source,
     flow: t.flow || 'expense',
     payment_method_id: t.flow==='income' ? null : (t.paymentMethodId||null),
+    recurring_expense_id: t.recurringExpenseId||null,
     is_installment: t.flow==='income' ? false : !!t.isInstallment,
     installment_principal: (t.flow!=='income' && t.isInstallment) ? (t.installmentPrincipal||null) : null,
     installment_total_months: (t.flow!=='income' && t.isInstallment) ? (t.installmentTotalMonths||null) : null,
@@ -304,6 +306,30 @@ function snapshotToDb(s){
 }
 const ASSET_TYPE_LABELS = { savings:'예적금', investment:'투자(주식/펀드)', cash:'현금성자산', other:'기타' };
 
+function dbToRecurring(row){
+  return {
+    id:row.id, name:row.name, kind:row.kind, amount:Number(row.amount),
+    categoryId: row.category_id, type: row.type, who: row.who,
+    paymentMethodId: row.payment_method_id,
+    totalMonths: row.total_months, paidCount: row.paid_count,
+    lastPaidMonth: row.last_paid_month, active: row.active,
+    originTransactionId: row.origin_transaction_id, memo: row.memo,
+  };
+}
+function recurringToDb(r){
+  return {
+    id:r.id, name:r.name, kind:r.kind, amount:r.amount,
+    category_id: r.categoryId||null, type: r.type||null, who: r.who||null,
+    payment_method_id: r.paymentMethodId||null,
+    total_months: r.kind==='installment' ? (r.totalMonths||null) : null,
+    paid_count: r.paidCount||0,
+    last_paid_month: r.lastPaidMonth||null,
+    active: r.active!=null ? r.active : true,
+    origin_transaction_id: r.originTransactionId||null,
+    memo: r.memo||null,
+  };
+}
+
 function fmtWon(n){
   const sign = n<0 ? '-' : '';
   return sign + Math.abs(Math.round(n)).toLocaleString('ko-KR') + '원';
@@ -353,6 +379,7 @@ function Sidebar({tab,setTab}){
   const items=[
     {id:'dashboard',label:'대시보드'},
     {id:'transactions',label:'거래 내역'},
+    {id:'recurring',label:'고정지출/할부 관리'},
     {id:'loans',label:'대출 관리'},
     {id:'assets',label:'저축/투자 관리'},
     {id:'paymentMethods',label:'결제수단 관리'},
@@ -473,8 +500,9 @@ function AddTransactionModal({categories, paymentMethods, onClose, onSave, initi
         <div className="field">
           <label style={{display:'flex',alignItems:'center',gap:6,cursor:'pointer'}}>
             <input type="checkbox" style={{width:'auto'}} checked={form.isInstallment} onChange={e=>update('isInstallment', e.target.checked)}/>
-            할부 결제예요
+            할부 결제예요 (일회성 기록용)
           </label>
+          <p style={{fontSize:11,color:'var(--ink-soft)',marginTop:4}}>매달 반복 관리하려면 "고정지출/할부 관리" 탭에서 등록하는 걸 추천해요.</p>
         </div>
         )}
 
@@ -506,7 +534,7 @@ function AddTransactionModal({categories, paymentMethods, onClose, onSave, initi
   );
 }
 
-function Dashboard({transactions, categories, loans, paymentMethods, assets}){
+function Dashboard({transactions, categories, loans, paymentMethods, assets, recurringExpenses}){
   const [viewMode,setViewMode] = useState('purchase'); // 'purchase' | 'billing'
   const [periodPreset,setPeriodPreset] = useState('thisMonth');
   const [periodFrom,setPeriodFrom] = useState('');
@@ -574,7 +602,7 @@ function Dashboard({transactions, categories, loans, paymentMethods, assets}){
   const catRanked = Object.entries(byCategory).sort((a,b)=>b[1]-a[1]).slice(0,5);
   const catName = id => categories.find(c=>c.id===id)?.name || id;
 
-  // 할부 현황 (전체 거래 기준, 진행중인 것만)
+  // 할부 현황 (전체 거래 기준, 진행중인 것만 — 마이그레이션 안 된 레거시 항목용)
   const activeInstallments = transactions.filter(t=>
     (t.flow||'expense')==='expense' && t.isInstallment && t.installmentTotalMonths && t.installmentCurrentMonth
   );
@@ -585,9 +613,15 @@ function Dashboard({transactions, categories, loans, paymentMethods, assets}){
   const totalInstallmentRemaining = installmentSummary.reduce((s,t)=>s+t.remainingAmount,0);
   const totalNextMonthInstallment = installmentSummary.reduce((s,t)=>s+t.nextMonthDue,0);
 
-  // 다음 달 예상 고정 지출 (카드 할부 + 대출 월납입액)
+  // 고정지출/할부 관리 탭 기준 활성 항목
+  const activeRecurring = (recurringExpenses||[]).filter(r=>r.active);
+  const recurringMonthlyTotal = activeRecurring.reduce((s,r)=>s+r.amount,0);
+  const curMonthKeyNow = new Date().toISOString().slice(0,7);
+  const recurringPaidThisMonth = activeRecurring.filter(r=>r.lastPaidMonth===curMonthKeyNow).length;
+
+  // 다음 달 예상 고정 지출 (레거시 할부 + 고정지출/할부 관리 항목 + 대출 월납입액)
   const nextMonthLoanPayment = (loans||[]).reduce((s,l)=>s+(l.monthlyPayment||0),0);
-  const nextMonthFixedTotal = totalNextMonthInstallment + nextMonthLoanPayment;
+  const nextMonthFixedTotal = totalNextMonthInstallment + recurringMonthlyTotal + nextMonthLoanPayment;
 
   // 저축 시뮬레이션
   const [simMonthly,setSimMonthly] = useState(null);
@@ -690,11 +724,11 @@ function Dashboard({transactions, categories, loans, paymentMethods, assets}){
 
       {nextMonthFixedTotal>0 && (
         <div className="card" style={{marginBottom:20}}>
-          <p className="stat-label" style={{marginBottom:10}}>다음 달 예상 고정 지출 (카드 할부 + 대출 상환)</p>
+          <p className="stat-label" style={{marginBottom:10}}>다음 달 예상 고정 지출 (고정지출/할부 + 대출 상환)</p>
           <div className="grid-3">
             <div>
-              <p className="stat-label">카드 할부</p>
-              <p className="stat-value" style={{fontSize:19}}>{fmtWon(totalNextMonthInstallment)}</p>
+              <p className="stat-label">고정지출/할부</p>
+              <p className="stat-value" style={{fontSize:19}}>{fmtWon(recurringMonthlyTotal+totalNextMonthInstallment)}</p>
             </div>
             <div>
               <p className="stat-label">대출 상환</p>
@@ -705,7 +739,20 @@ function Dashboard({transactions, categories, loans, paymentMethods, assets}){
               <p className="stat-value" style={{fontSize:19,color:'var(--personal)'}}>{fmtWon(nextMonthFixedTotal)}</p>
             </div>
           </div>
-          <p style={{fontSize:11.5,color:'var(--ink-soft)',marginTop:10}}>이 금액은 예상치예요. 실제 이체하실 때는 거래 내역에 지출로 꼭 기록해주세요.</p>
+          <p style={{fontSize:11.5,color:'var(--ink-soft)',marginTop:10}}>이 금액은 예상치예요. 고정지출/할부 관리 탭에서 "납부 처리"를 누르면 실제 거래로 자동 기록돼요.</p>
+        </div>
+      )}
+
+      {activeRecurring.length>0 && (
+        <div className="card" style={{marginBottom:20}}>
+          <p className="stat-label" style={{marginBottom:10}}>이번 달 고정지출/할부 처리 현황</p>
+          <p className="stat-value" style={{fontSize:22,marginBottom:10}}>{recurringPaidThisMonth}/{activeRecurring.length}건 완료</p>
+          {activeRecurring.filter(r=>r.lastPaidMonth!==curMonthKeyNow).map(r=>(
+            <div key={r.id} style={{display:'flex',justifyContent:'space-between',fontSize:12.5,padding:'5px 0',borderBottom:'1px solid var(--line)'}}>
+              <span>{r.name}</span>
+              <span className="mono" style={{color:'var(--danger)'}}>미처리 · {fmtWon(r.amount)}</span>
+            </div>
+          ))}
         </div>
       )}
 
@@ -1787,6 +1834,227 @@ function Assets({assets, snapshots, onAdd, onEdit, onDelete, onAddSnapshot}){
   );
 }
 
+function RecurringExpenseModal({categories, paymentMethods, onClose, onSave, initial}){
+  const [form,setForm]=useState(initial ? {...initial} : {
+    name:'', kind:'fixed', amount:'', categoryId: categories[0]?.id||'', type:'',
+    who: WHO_OPTIONS[0], paymentMethodId: (paymentMethods&&paymentMethods[0]?.id)||'cash',
+    totalMonths:'', paidCount:0, memo:''
+  });
+  const selectedCat = categories.find(c=>c.id===form.categoryId);
+  const effectiveType = form.type || (selectedCat?selectedCat.type:'joint');
+  function update(k,v){ setForm(f=>({...f,[k]:v})); }
+  function submit(){
+    if(!form.name || !form.amount) return;
+    if(form.kind==='installment' && !form.totalMonths) return;
+    onSave({
+      id: initial?initial.id:'rec_'+Date.now()+Math.random().toString(36).slice(2,7),
+      name: form.name, kind: form.kind, amount: Number(form.amount),
+      categoryId: form.categoryId, type: effectiveType, who: form.who,
+      paymentMethodId: form.paymentMethodId,
+      totalMonths: form.kind==='installment' ? Number(form.totalMonths) : null,
+      paidCount: Number(form.paidCount)||0,
+      lastPaidMonth: initial?initial.lastPaidMonth:null,
+      active: initial ? initial.active : true,
+      originTransactionId: initial?initial.originTransactionId:null,
+      memo: form.memo,
+    });
+  }
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" onClick={e=>e.stopPropagation()}>
+        <h2>{initial?'고정지출/할부 수정':'고정지출/할부 추가'}</h2>
+        <div className="field">
+          <label>종류</label>
+          <div className="toggle-row">
+            <button type="button" className={"toggle-btn"+(form.kind==='fixed'?' active-joint':'')} onClick={()=>update('kind','fixed')}>고정지출 (구독/월세 등)</button>
+            <button type="button" className={"toggle-btn"+(form.kind==='installment'?' active-personal':'')} onClick={()=>update('kind','installment')}>할부 (개월 정해짐)</button>
+          </div>
+        </div>
+        <div className="field">
+          <label>이름</label>
+          <input value={form.name} onChange={e=>update('name',e.target.value)} placeholder="예: 넷플릭스, 노트북 할부"/>
+        </div>
+        <div className="row-2">
+          <div className="field">
+            <label>{form.kind==='installment'?'월 할부금':'월 금액'}</label>
+            <input type="number" placeholder="15000" value={form.amount} onChange={e=>update('amount',e.target.value)}/>
+          </div>
+          {form.kind==='installment' && (
+            <div className="field">
+              <label>총 할부 개월</label>
+              <input type="number" min="1" placeholder="예: 12" value={form.totalMonths} onChange={e=>update('totalMonths',e.target.value)}/>
+            </div>
+          )}
+        </div>
+        {form.kind==='installment' && (
+          <div className="field">
+            <label>이미 납부한 횟수 (신규 등록 시)</label>
+            <input type="number" min="0" value={form.paidCount} onChange={e=>update('paidCount',e.target.value)}/>
+          </div>
+        )}
+        <div className="field">
+          <label>카테고리</label>
+          <select value={form.categoryId} onChange={e=>setForm(f=>({...f, categoryId:e.target.value, type:''}))}>
+            {categories.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+        </div>
+        <div className="field">
+          <label>공동 / 개인</label>
+          <div className="toggle-row">
+            <button type="button" className={"toggle-btn"+(effectiveType==='joint'?' active-joint':'')} onClick={()=>update('type','joint')}>공동</button>
+            <button type="button" className={"toggle-btn"+(effectiveType==='personal'?' active-personal':'')} onClick={()=>update('type','personal')}>개인</button>
+          </div>
+        </div>
+        <div className="row-2">
+          <div className="field">
+            <label>입력자</label>
+            <select value={form.who} onChange={e=>update('who',e.target.value)}>
+              {WHO_OPTIONS.map(w=><option key={w} value={w}>{w}</option>)}
+            </select>
+          </div>
+          <div className="field">
+            <label>결제수단</label>
+            <select value={form.paymentMethodId} onChange={e=>update('paymentMethodId',e.target.value)}>
+              {(paymentMethods||[]).map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          </div>
+        </div>
+        <div className="field">
+          <label>메모</label>
+          <input value={form.memo} onChange={e=>update('memo',e.target.value)} placeholder="선택 입력"/>
+        </div>
+        <div style={{display:'flex',justifyContent:'flex-end',gap:8,marginTop:20}}>
+          <button className="btn-ghost" onClick={onClose}>취소</button>
+          <button className="btn-primary" onClick={submit}>저장</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RecurringExpenses({recurringExpenses, categories, paymentMethods, transactions, onAdd, onEdit, onDelete, onPay, onMigrate}){
+  const [showModal,setShowModal]=useState(false);
+  const [editing,setEditing]=useState(null);
+  const [showInactive,setShowInactive]=useState(false);
+
+  const curMonth = new Date().toISOString().slice(0,7);
+  const catName = id => categories.find(c=>c.id===id)?.name || id;
+
+  const migratable = transactions.filter(t=>
+    (t.flow||'expense')==='expense' && t.isInstallment && t.installmentTotalMonths && t.installmentCurrentMonth &&
+    !recurringExpenses.some(r=>r.originTransactionId===t.id)
+  );
+
+  const visible = recurringExpenses.filter(r=>showInactive || r.active);
+  const activeTotal = recurringExpenses.filter(r=>r.active).reduce((s,r)=>s+r.amount,0);
+  const paidThisMonth = recurringExpenses.filter(r=>r.active && r.lastPaidMonth===curMonth).length;
+  const activeCount = recurringExpenses.filter(r=>r.active).length;
+
+  return (
+    <div>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:20,flexWrap:'wrap',gap:10}}>
+        <div>
+          <h1 className="page-title">고정지출 / 할부 관리</h1>
+          <p className="subtitle" style={{margin:0}}>구독료, 월세, 카드 할부처럼 매달 반복되는 지출을 한 번 등록해두고 버튼으로 처리해요</p>
+        </div>
+        <button className="btn-primary" onClick={()=>{setEditing(null);setShowModal(true);}}>+ 새 항목 추가</button>
+      </div>
+
+      {migratable.length>0 && (
+        <div className="card" style={{marginBottom:16,background:'var(--gold-soft)',border:'1px solid var(--gold)'}}>
+          <p style={{fontSize:13.5,marginBottom:8}}><strong>{migratable.length}건</strong>의 기존 할부 거래를 이 시스템으로 옮길 수 있어요 (진행 상황 그대로 가져와요).</p>
+          <button className="btn-primary" onClick={()=>onMigrate(migratable)}>기존 할부 거래 마이그레이션</button>
+        </div>
+      )}
+
+      {recurringExpenses.length>0 && (
+        <div className="grid-3" style={{marginBottom:20}}>
+          <div className="card">
+            <p className="stat-label">활성 항목 월 합계</p>
+            <p className="stat-value" style={{fontSize:19}}>{fmtWon(activeTotal)}</p>
+          </div>
+          <div className="card">
+            <p className="stat-label">이번 달 처리 현황</p>
+            <p className="stat-value" style={{fontSize:19}}>{paidThisMonth}/{activeCount}건</p>
+          </div>
+          <div className="card">
+            <p className="stat-label">전체 등록 항목</p>
+            <p className="stat-value" style={{fontSize:19}}>{recurringExpenses.length}건</p>
+          </div>
+        </div>
+      )}
+
+      <div style={{marginBottom:12}}>
+        <label style={{display:'inline-flex',alignItems:'center',gap:6,fontSize:12.5,color:'var(--ink-soft)',cursor:'pointer'}}>
+          <input type="checkbox" style={{width:'auto'}} checked={showInactive} onChange={e=>setShowInactive(e.target.checked)}/>
+          비활성/완료된 항목도 보기
+        </label>
+      </div>
+
+      {visible.length===0 ? (
+        <div className="card">
+          <div className="empty">
+            <p className="display">등록된 항목이 없어요</p>
+            <p style={{fontSize:13}}>구독료나 할부 결제를 추가해보세요.</p>
+          </div>
+        </div>
+      ) : (
+        visible.map(r=>{
+          const paidThis = r.lastPaidMonth===curMonth;
+          const progress = r.kind==='installment' && r.totalMonths ? Math.min(r.paidCount/r.totalMonths*100,100) : null;
+          return (
+            <div key={r.id} className="card" style={{marginBottom:14, opacity:r.active?1:0.55}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:10,flexWrap:'wrap',gap:8}}>
+                <div>
+                  <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+                    <span style={{fontWeight:600,fontSize:14.5}}>{r.name}</span>
+                    <span className="pill" style={{background:r.kind==='installment'?'var(--gold-soft)':'var(--joint-soft)',color:r.kind==='installment'?'#8a6d10':'var(--joint)'}}>
+                      {r.kind==='installment'?'할부':'고정지출'}
+                    </span>
+                    <span className={"pill "+r.type}>{r.type==='joint'?'공동':'개인'}</span>
+                    {!r.active && <span className="pill" style={{background:'var(--line)',color:'var(--ink-soft)'}}>비활성</span>}
+                  </div>
+                  <p style={{fontSize:12,color:'var(--ink-soft)',marginTop:4}}>
+                    {catName(r.categoryId)} · {r.who}
+                    {r.kind==='installment' && r.totalMonths ? ` · ${r.paidCount}/${r.totalMonths}회` : ''}
+                  </p>
+                </div>
+                <div style={{display:'flex',gap:4,whiteSpace:'nowrap'}}>
+                  {r.active && (
+                    <button className="btn-primary" style={{padding:'8px 14px',fontSize:12.5}} disabled={paidThis} onClick={()=>onPay(r)}>
+                      {paidThis?'이번 달 완료':'이번 달 납부 처리'}
+                    </button>
+                  )}
+                  <button className="btn-icon" onClick={()=>{setEditing(r);setShowModal(true);}}>수정</button>
+                  <button className="btn-icon" onClick={()=>{ if(window.confirm('삭제할까요? (이미 생성된 거래 기록은 안 지워져요)')) onDelete(r.id); }}>삭제</button>
+                </div>
+              </div>
+              <p className="stat-value" style={{fontSize:18}}>{fmtWon(r.amount)}<span style={{fontSize:12,color:'var(--ink-soft)',fontWeight:400}}> / 월</span></p>
+              {progress!=null && (
+                <div style={{marginTop:8}}>
+                  <div style={{height:6,background:'var(--line)',borderRadius:99}}>
+                    <div style={{height:6,width:progress+'%',background:'var(--gold)',borderRadius:99}}></div>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })
+      )}
+
+      {showModal && (
+        <RecurringExpenseModal
+          categories={categories}
+          paymentMethods={paymentMethods}
+          initial={editing}
+          onClose={()=>setShowModal(false)}
+          onSave={(r)=>{ editing?onEdit(r):onAdd(r); setShowModal(false); }}
+        />
+      )}
+    </div>
+  );
+}
+
 function CategorySettings({categories, setCategories}){
   const [newKeyword, setNewKeyword] = useState({});
 
@@ -1849,7 +2117,7 @@ function CategorySettings({categories, setCategories}){
 
 function App(){
   const isOnline = !!supabase;
-  const [state,setState]=useState(isOnline ? {transactions:[], categories:[], loans:[], paymentMethods:[], assets:[], assetSnapshots:[]} : {loans:[], paymentMethods:[], assets:[], assetSnapshots:[], ...loadLocal()});
+  const [state,setState]=useState(isOnline ? {transactions:[], categories:[], loans:[], paymentMethods:[], assets:[], assetSnapshots:[], recurringExpenses:[]} : {loans:[], paymentMethods:[], assets:[], assetSnapshots:[], recurringExpenses:[], ...loadLocal()});
   const [tab,setTab]=useState('dashboard');
   const [syncStatus,setSyncStatus]=useState(isOnline ? 'connecting' : 'local');
 
@@ -1862,16 +2130,17 @@ function App(){
     let cancelled = false;
 
     async function init(){
-      const [{data:cats, error:catErr}, {data:txs, error:txErr}, {data:loans, error:loanErr}, {data:pms, error:pmErr}, {data:assets, error:assetErr}, {data:snaps, error:snapErr}] = await Promise.all([
+      const [{data:cats, error:catErr}, {data:txs, error:txErr}, {data:loans, error:loanErr}, {data:pms, error:pmErr}, {data:assets, error:assetErr}, {data:snaps, error:snapErr}, {data:recs, error:recErr}] = await Promise.all([
         supabase.from('categories').select('*').order('created_at'),
         supabase.from('transactions').select('*').order('date',{ascending:false}),
         supabase.from('loans').select('*').order('created_at'),
         supabase.from('payment_methods').select('*').order('created_at'),
         supabase.from('assets').select('*').order('created_at'),
         supabase.from('asset_snapshots').select('*').order('date'),
+        supabase.from('recurring_expenses').select('*').order('created_at'),
       ]);
       if(cancelled) return;
-      if(catErr || txErr || loanErr || pmErr || assetErr || snapErr){ console.error(catErr||txErr||loanErr||pmErr||assetErr||snapErr); setSyncStatus('error'); return; }
+      if(catErr || txErr || loanErr || pmErr || assetErr || snapErr || recErr){ console.error(catErr||txErr||loanErr||pmErr||assetErr||snapErr||recErr); setSyncStatus('error'); return; }
       setState({
         categories: (cats||[]).map(dbToCat),
         transactions: (txs||[]).map(dbToTx),
@@ -1879,6 +2148,7 @@ function App(){
         paymentMethods: (pms||[]).map(dbToPM),
         assets: (assets||[]).map(dbToAsset),
         assetSnapshots: (snaps||[]).map(dbToSnapshot),
+        recurringExpenses: (recs||[]).map(dbToRecurring),
       });
       setSyncStatus('live');
     }
@@ -1972,6 +2242,21 @@ function App(){
           return s;
         });
       })
+      .on('postgres_changes',{event:'*',schema:'public',table:'recurring_expenses'}, payload=>{
+        setState(s=>{
+          if(payload.eventType==='INSERT'){
+            if(s.recurringExpenses.some(r=>r.id===payload.new.id)) return s;
+            return {...s, recurringExpenses:[...s.recurringExpenses, dbToRecurring(payload.new)]};
+          }
+          if(payload.eventType==='UPDATE'){
+            return {...s, recurringExpenses:s.recurringExpenses.map(r=>r.id===payload.new.id?dbToRecurring(payload.new):r)};
+          }
+          if(payload.eventType==='DELETE'){
+            return {...s, recurringExpenses:s.recurringExpenses.filter(r=>r.id!==payload.old.id)};
+          }
+          return s;
+        });
+      })
       .subscribe();
 
     return ()=>{ cancelled=true; supabase.removeChannel(channel); };
@@ -2052,6 +2337,61 @@ function App(){
     }
   }
 
+  // ---- 고정지출/할부 CRUD ----
+  async function addRecurring(r){
+    setState(s=>({...s, recurringExpenses:[...s.recurringExpenses, r]}));
+    if(isOnline){
+      const {error} = await supabase.from('recurring_expenses').insert([recurringToDb(r)]);
+      if(error) console.error(error);
+    }
+  }
+  async function editRecurring(r){
+    setState(s=>({...s, recurringExpenses:s.recurringExpenses.map(x=>x.id===r.id?r:x)}));
+    if(isOnline){
+      const {error} = await supabase.from('recurring_expenses').update(recurringToDb(r)).eq('id',r.id);
+      if(error) console.error(error);
+    }
+  }
+  async function deleteRecurring(id){
+    setState(s=>({...s, recurringExpenses:s.recurringExpenses.filter(r=>r.id!==id)}));
+    if(isOnline){
+      const {error} = await supabase.from('recurring_expenses').delete().eq('id',id);
+      if(error) console.error(error);
+    }
+  }
+  async function payRecurring(r){
+    const curMonthKey = new Date().toISOString().slice(0,7);
+    const tx = {
+      id:'tx_'+Date.now()+Math.random().toString(36).slice(2,7),
+      date: todayISO(), amount: r.amount, categoryId: r.categoryId, type: r.type, who: r.who,
+      memo: r.name, source:'recurring', flow:'expense', paymentMethodId: r.paymentMethodId,
+      isInstallment:false, installmentPrincipal:null, installmentTotalMonths:null, installmentCurrentMonth:null,
+      recurringExpenseId: r.id,
+    };
+    await addTx(tx);
+    const newPaidCount = (r.paidCount||0)+1;
+    const newActive = r.kind==='installment' ? (newPaidCount < r.totalMonths) : true;
+    await editRecurring({...r, paidCount:newPaidCount, lastPaidMonth: curMonthKey, active: newActive});
+  }
+  async function migrateInstallments(list){
+    for(let i=0;i<list.length;i++){
+      const tx = list[i];
+      const rec = {
+        id:'rec_'+Date.now()+'_'+i+Math.random().toString(36).slice(2,5),
+        name: tx.memo || (state.categories.find(c=>c.id===tx.categoryId)?.name) || '할부',
+        kind:'installment', amount: tx.amount,
+        categoryId: tx.categoryId, type: tx.type, who: tx.who,
+        paymentMethodId: tx.paymentMethodId||null,
+        totalMonths: tx.installmentTotalMonths, paidCount: tx.installmentCurrentMonth,
+        lastPaidMonth: monthKey(tx.date),
+        active: tx.installmentCurrentMonth < tx.installmentTotalMonths,
+        originTransactionId: tx.id, memo:null,
+      };
+      await addRecurring(rec);
+      await editTx({...tx, isInstallment:false, installmentPrincipal:null, installmentTotalMonths:null, installmentCurrentMonth:null});
+    }
+  }
+
   // ---- 결제수단 CRUD ----
   async function addPM(p){
     setState(s=>({...s, paymentMethods:[...s.paymentMethods, p]}));
@@ -2119,8 +2459,9 @@ function App(){
       <Sidebar tab={tab} setTab={setTab}/>
       <div className="main">
         <SyncBadge status={syncStatus}/>
-        {tab==='dashboard' && <Dashboard transactions={state.transactions} categories={state.categories} loans={state.loans} paymentMethods={state.paymentMethods} assets={state.assets}/>}
+        {tab==='dashboard' && <Dashboard transactions={state.transactions} categories={state.categories} loans={state.loans} paymentMethods={state.paymentMethods} assets={state.assets} recurringExpenses={state.recurringExpenses}/>}
         {tab==='transactions' && <Transactions transactions={state.transactions} categories={state.categories} paymentMethods={state.paymentMethods} onAdd={addTx} onEdit={editTx} onDelete={deleteTx}/>}
+        {tab==='recurring' && <RecurringExpenses recurringExpenses={state.recurringExpenses} categories={state.categories} paymentMethods={state.paymentMethods} transactions={state.transactions} onAdd={addRecurring} onEdit={editRecurring} onDelete={deleteRecurring} onPay={payRecurring} onMigrate={migrateInstallments}/>}
         {tab==='loans' && <Loans loans={state.loans} onAdd={addLoan} onEdit={editLoan} onDelete={deleteLoan}/>}
         {tab==='assets' && <Assets assets={state.assets} snapshots={state.assetSnapshots} onAdd={addAsset} onEdit={editAsset} onDelete={deleteAsset} onAddSnapshot={addAssetSnapshot}/>}
         {tab==='paymentMethods' && <PaymentMethods paymentMethods={state.paymentMethods} onAdd={addPM} onEdit={editPM} onDelete={deletePM}/>}
