@@ -1,0 +1,884 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>우리집 가계부</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" as="style" crossorigin href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<style>
+  :root{
+    --paper:#EFEDE6;
+    --paper-raised:rgba(255,255,255,0.55);
+    --paper-raised-solid:#FFFFFF;
+    --ink:#1C2B22;
+    --ink-soft:#5B6B5F;
+    --line:rgba(28,43,34,0.10);
+    --glass-border:rgba(255,255,255,0.6);
+    --joint:#2F5D4E;
+    --joint-soft:rgba(47,93,78,0.14);
+    --personal:#8B5E7A;
+    --personal-soft:rgba(139,94,122,0.14);
+    --gold:#C9A227;
+    --gold-soft:rgba(201,162,39,0.16);
+    --danger:#B5493B;
+    --radius:18px;
+    --blur:18px;
+  }
+  *{box-sizing:border-box;}
+  html,body{height:100%;}
+  body{
+    margin:0;color:var(--ink);font-family:'Pretendard',sans-serif;
+    background:
+      radial-gradient(560px 420px at 8% 0%, rgba(47,93,78,0.30), transparent 60%),
+      radial-gradient(620px 460px at 92% 12%, rgba(201,162,39,0.26), transparent 55%),
+      radial-gradient(680px 520px at 30% 95%, rgba(139,94,122,0.24), transparent 60%),
+      radial-gradient(680px 520px at 85% 90%, rgba(47,93,78,0.18), transparent 55%),
+      var(--paper);
+    background-attachment:fixed;
+  }
+  .display{font-family:'Pretendard',sans-serif;}
+  .mono{font-family:'JetBrains Mono',monospace;}
+  #root{min-height:100vh;}
+  .app{display:flex;min-height:100vh;}
+  .rail{
+    width:220px;flex-shrink:0;padding:28px 18px;display:flex;flex-direction:column;gap:4px;
+    background:rgba(255,255,255,0.38);
+    -webkit-backdrop-filter:blur(var(--blur)) saturate(160%);
+    backdrop-filter:blur(var(--blur)) saturate(160%);
+    border-right:1px solid var(--glass-border);
+  }
+  .brand{font-family:'Pretendard',sans-serif;font-weight:700;font-size:20px;margin:0 8px 28px;color:var(--ink);}
+  .brand span{color:var(--joint);}
+  .navitem{display:flex;align-items:center;gap:10px;padding:11px 12px;border-radius:12px;cursor:pointer;font-size:14.5px;color:var(--ink-soft);transition:background .15s,color .15s;}
+  .navitem:hover{background:rgba(255,255,255,0.5);}
+  .navitem.active{background:var(--joint);color:#fff;font-weight:600;box-shadow:0 6px 16px rgba(47,93,78,0.35);}
+  .main{flex:1;padding:36px 44px;max-width:1180px;}
+  h1.page-title{font-family:'Pretendard',sans-serif;font-size:26px;font-weight:700;margin:0 0 6px;letter-spacing:-0.01em;}
+  .subtitle{color:var(--ink-soft);font-size:14px;margin:0 0 28px;}
+  .card{
+    background:var(--paper-raised);
+    border:1px solid var(--glass-border);
+    border-radius:var(--radius);
+    padding:22px;
+    -webkit-backdrop-filter:blur(var(--blur)) saturate(160%);
+    backdrop-filter:blur(var(--blur)) saturate(160%);
+    box-shadow:0 8px 32px rgba(28,43,34,0.08);
+  }
+  .grid-2{display:grid;grid-template-columns:1.3fr 1fr;gap:20px;}
+  .grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;}
+  .stat-label{font-size:12.5px;color:var(--ink-soft);margin:0 0 6px;}
+  .stat-value{font-family:'JetBrains Mono',monospace;font-size:24px;font-weight:600;margin:0;}
+  .pill{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;padding:3px 9px;border-radius:99px;font-weight:500;}
+  .pill.joint{background:var(--joint-soft);color:var(--joint);}
+  .pill.personal{background:var(--personal-soft);color:var(--personal);}
+  table{width:100%;border-collapse:collapse;font-size:13.5px;}
+  th{text-align:left;padding:10px 8px;font-size:11.5px;color:var(--ink-soft);border-bottom:1px solid var(--line);font-weight:600;letter-spacing:.02em;}
+  td{padding:11px 8px;border-bottom:1px solid var(--line);}
+  tr:last-child td{border-bottom:none;}
+  .amount{font-family:'JetBrains Mono',monospace;text-align:right;font-weight:500;}
+  button{font-family:'Pretendard',sans-serif;cursor:pointer;border:none;}
+  .btn-primary{background:var(--joint);color:#fff;padding:10px 18px;border-radius:9px;font-size:13.5px;font-weight:500;}
+  .btn-primary:hover{background:#25493d;}
+  .btn-ghost{background:rgba(255,255,255,0.4);color:var(--ink-soft);padding:9px 14px;border-radius:11px;font-size:13px;border:1px solid var(--glass-border);}
+  .btn-ghost:hover{background:rgba(255,255,255,0.65);}
+  .btn-icon{background:transparent;color:var(--ink-soft);padding:4px 8px;border-radius:6px;font-size:12.5px;}
+  .btn-icon:hover{background:rgba(28,43,34,0.08);}
+  input,select,textarea{font-family:'Pretendard',sans-serif;border:1px solid var(--glass-border);border-radius:10px;padding:9px 11px;font-size:13.5px;background:rgba(255,255,255,0.55);color:var(--ink);width:100%;}
+  input:focus,select:focus,textarea:focus{outline:2px solid var(--joint);outline-offset:1px;}
+  label{font-size:12.5px;color:var(--ink-soft);display:block;margin-bottom:5px;}
+  .field{margin-bottom:14px;}
+  .modal-backdrop{position:fixed;inset:0;background:rgba(28,43,34,.28);-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;z-index:50;}
+  .modal{
+    background:rgba(255,255,255,0.7);border:1px solid var(--glass-border);border-radius:20px;padding:26px;width:440px;max-height:88vh;overflow:auto;
+    -webkit-backdrop-filter:blur(24px) saturate(160%);backdrop-filter:blur(24px) saturate(160%);
+    box-shadow:0 20px 60px rgba(28,43,34,0.25);
+  }
+  .modal h2{font-family:'Pretendard',sans-serif;font-weight:700;font-size:19px;margin:0 0 18px;}
+  .row-2{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+  .filter-bar{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;align-items:center;}
+  .filter-bar select,.filter-bar input{width:auto;min-width:110px;}
+  .empty{text-align:center;padding:50px 20px;color:var(--ink-soft);}
+  .empty .display{font-size:17px;margin-bottom:6px;color:var(--ink);}
+  .toggle-row{display:flex;gap:8px;}
+  .toggle-btn{flex:1;padding:9px;border-radius:8px;border:1px solid var(--line);background:var(--paper-raised);font-size:13px;color:var(--ink-soft);}
+  .toggle-btn.active-joint{background:var(--joint);border-color:var(--joint);color:#fff;}
+  .toggle-btn.active-personal{background:var(--personal);border-color:var(--personal);color:#fff;}
+  .csv-table{font-size:12.5px;}
+  .csv-table th,.csv-table td{padding:7px 6px;}
+  .map-select{width:100%;}
+  .who-badge{width:22px;height:22px;border-radius:99px;background:var(--gold-soft);color:#8a6d10;font-size:10.5px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;}
+  .keyword-tag{display:inline-flex;align-items:center;gap:5px;background:var(--paper);border:1px solid var(--line);border-radius:99px;padding:3px 9px;font-size:12px;margin:2px 4px 2px 0;}
+  .keyword-tag button{color:var(--ink-soft);font-size:13px;line-height:1;}
+  .cat-row{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--line);}
+  .cat-row:last-child{border-bottom:none;}
+  .cat-name{flex:1;font-size:13.5px;font-weight:500;}
+
+  /* ---------- 모바일 반응형 ---------- */
+  @media (max-width: 760px){
+    .app{flex-direction:column;}
+    .rail{
+      position:fixed;bottom:0;left:0;right:0;width:100%;height:60px;z-index:40;
+      flex-direction:row;justify-content:space-around;align-items:center;
+      padding:6px 4px;border-right:none;border-top:1px solid var(--glass-border);
+    }
+    .brand{display:none;}
+    .navitem{flex-direction:column;gap:2px;font-size:10.5px;padding:6px 8px;text-align:center;flex:1;justify-content:center;}
+    .navitem.active{box-shadow:none;}
+    .main{padding:20px 16px 84px;max-width:100%;}
+    h1.page-title{font-size:22px;}
+    .grid-2,.grid-3,.row-2{grid-template-columns:1fr;}
+    .modal{width:min(440px,92vw);padding:20px;}
+
+    /* 테이블 -> 카드 리스트 전환 */
+    table thead{display:none;}
+    table,tbody,tr,td{display:block;width:100%;}
+    tr{margin-bottom:12px;border:1px solid var(--glass-border);border-radius:12px;padding:10px 12px;background:rgba(255,255,255,0.45);}
+    td{border-bottom:none;padding:6px 0;display:flex;justify-content:space-between;align-items:center;gap:10px;text-align:right;}
+    td[data-label]::before{content:attr(data-label);font-size:11px;color:var(--ink-soft);font-weight:500;text-align:left;}
+    td.amount{text-align:right;}
+
+    .csv-table tr{padding:8px 10px;}
+    .filter-bar select{flex:1 1 45%;min-width:0;}
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const {useState,useEffect,useMemo,useRef} = React;
+
+// ---------- Supabase 설정 (여기 두 줄만 본인 프로젝트 값으로 교체하세요) ----------
+const SUPABASE_URL = 'https://qphmjfzwesuujakjaybg.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFwaG1qZnp3ZXN1dWpha2pheWJnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODY5MTcyODQsImV4cCI6MjEwMjQ5MzI4NH0.Ii25NJ19bef6btUhwk6mdH7EruOIW5VqbPY_K1voOq0';
+const supabase = (SUPABASE_URL.startsWith('http'))
+  ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+  : null;
+
+const DEFAULT_CATEGORIES = [
+  {id:'housing',name:'주거/공과금',type:'joint',keywords:['관리비','도시가스','전기요금','수도요금','아파트']},
+  {id:'grocery',name:'식비(장보기)',type:'joint',keywords:['마트','이마트','홈플러스','코스트코']},
+  {id:'dining',name:'외식',type:'joint',keywords:['식당','배달','배민','요기요','카페','스타벅스']},
+  {id:'telecom',name:'통신비',type:'joint',keywords:['SKT','KT','LG유플러스','통신']},
+  {id:'insurance',name:'보험',type:'joint',keywords:['보험']},
+  {id:'transport',name:'교통',type:'joint',keywords:['택시','주유','대중교통','지하철버스']},
+  {id:'event',name:'경조사',type:'joint',keywords:['축의금','조의금']},
+  {id:'saving',name:'저축/투자',type:'joint',keywords:['적금','펀드','증권']},
+  {id:'shopping',name:'쇼핑',type:'personal',keywords:['쿠팡','네이버페이','올리브영']},
+  {id:'hobby',name:'취미/여가',type:'personal',keywords:['영화관','넷플릭스','골프']},
+  {id:'health',name:'의료/건강',type:'personal',keywords:['병원','약국']},
+  {id:'selfdev',name:'자기계발',type:'personal',keywords:['서점','학원','강의']},
+  {id:'etc',name:'기타',type:'personal',keywords:[]},
+];
+
+const WHO_OPTIONS = ['민경','배우자'];
+
+// ---- 로컬 폴백 (Supabase 미설정 시 지금까지처럼 브라우저 저장) ----
+function loadLocal(){
+  try{
+    const raw = localStorage.getItem('ledger_state_v1');
+    if(raw) return JSON.parse(raw);
+  }catch(e){}
+  return {transactions:[], categories:DEFAULT_CATEGORIES};
+}
+function saveLocal(state){
+  try{ localStorage.setItem('ledger_state_v1', JSON.stringify(state)); }catch(e){}
+}
+
+// ---- Supabase row <-> 앱 내부 객체 매핑 ----
+function dbToTx(row){
+  return {id:row.id, date:row.date, amount:Number(row.amount), categoryId:row.category_id, type:row.type, who:row.who, memo:row.memo, source:row.source};
+}
+function txToDb(t){
+  return {id:t.id, date:t.date, amount:t.amount, category_id:t.categoryId, type:t.type, who:t.who, memo:t.memo, source:t.source};
+}
+function dbToCat(row){
+  return {id:row.id, name:row.name, type:row.type, keywords:row.keywords||[]};
+}
+
+function fmtWon(n){
+  const sign = n<0 ? '-' : '';
+  return sign + Math.abs(Math.round(n)).toLocaleString('ko-KR') + '원';
+}
+function monthKey(dateStr){ return (dateStr||'').slice(0,7); }
+function todayISO(){ return new Date().toISOString().slice(0,10); }
+
+function guessCategory(desc, categories){
+  if(!desc) return null;
+  const lower = desc.toLowerCase();
+  for(const c of categories){
+    for(const kw of c.keywords){
+      if(lower.includes(kw.toLowerCase())) return c.id;
+    }
+  }
+  return null;
+}
+
+// ---------- Growth Ring (signature chart) ----------
+function GrowthRing({rate, target}){
+  const size=150, cx=size/2, cy=size/2, r=60, stroke=10;
+  const circumference = 2*Math.PI*r;
+  const pct = Math.max(0, Math.min(1, rate/100));
+  const targetPct = Math.max(0, Math.min(1, target/100));
+  return (
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+      <circle cx={cx} cy={cy} r={r} fill="none" stroke="var(--line)" strokeWidth={stroke}/>
+      <circle cx={cx} cy={cy} r={r-16} fill="none" stroke="var(--line)" strokeWidth={5} strokeDasharray="2 6" opacity="0.6"/>
+      <circle
+        cx={cx} cy={cy} r={r} fill="none" stroke="var(--gold)" strokeWidth={stroke}
+        strokeDasharray={`${circumference*pct} ${circumference}`}
+        strokeLinecap="round"
+        transform={`rotate(-90 ${cx} ${cy})`}
+      />
+      <line
+        x1={cx} y1={cy-r-8} x2={cx} y2={cy-r+8}
+        stroke="var(--ink-soft)" strokeWidth="2"
+        transform={`rotate(${targetPct*360} ${cx} ${cy})`}
+      />
+      <text x={cx} y={cy-2} textAnchor="middle" className="mono" fontSize="22" fontWeight="600" fill="var(--ink)">{rate.toFixed(0)}%</text>
+      <text x={cx} y={cy+16} textAnchor="middle" fontSize="11" fill="var(--ink-soft)">저축률</text>
+    </svg>
+  );
+}
+
+function Sidebar({tab,setTab}){
+  const items=[
+    {id:'dashboard',label:'대시보드'},
+    {id:'transactions',label:'거래 내역'},
+    {id:'csv',label:'CSV 업로드'},
+    {id:'categories',label:'카테고리 설정'},
+  ];
+  return (
+    <div className="rail">
+      <div className="brand">우리집 <span>가계부</span></div>
+      {items.map(it=>(
+        <div key={it.id} className={"navitem"+(tab===it.id?' active':'')} onClick={()=>setTab(it.id)}>{it.label}</div>
+      ))}
+    </div>
+  );
+}
+
+function AddTransactionModal({categories, onClose, onSave, initial}){
+  const [form,setForm]=useState(initial || {
+    date: todayISO(), amount:'', categoryId: categories[0]?.id||'', type:'', who:WHO_OPTIONS[0], memo:''
+  });
+  const selectedCat = categories.find(c=>c.id===form.categoryId);
+  const effectiveType = form.type || (selectedCat?selectedCat.type:'joint');
+
+  function update(k,v){ setForm(f=>({...f,[k]:v})); }
+
+  function submit(){
+    if(!form.amount || !form.date) return;
+    onSave({
+      id: initial?initial.id: 'tx_'+Date.now()+Math.random().toString(36).slice(2,7),
+      date: form.date,
+      amount: Number(form.amount),
+      categoryId: form.categoryId,
+      type: effectiveType,
+      who: form.who,
+      memo: form.memo,
+      source: initial?initial.source:'manual'
+    });
+  }
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" onClick={e=>e.stopPropagation()}>
+        <h2>{initial?'거래 수정':'거래 추가'}</h2>
+        <div className="row-2">
+          <div className="field">
+            <label>날짜</label>
+            <input type="date" value={form.date} onChange={e=>update('date',e.target.value)}/>
+          </div>
+          <div className="field">
+            <label>금액 (원)</label>
+            <input type="number" placeholder="15000" value={form.amount} onChange={e=>update('amount',e.target.value)}/>
+          </div>
+        </div>
+        <div className="field">
+          <label>카테고리</label>
+          <select value={form.categoryId} onChange={e=>setForm(f=>({...f, categoryId:e.target.value, type:''}))}>
+            {categories.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+        </div>
+        <div className="field">
+          <label>공동 / 개인 (기본값에서 변경 가능)</label>
+          <div className="toggle-row">
+            <button type="button" className={"toggle-btn"+(effectiveType==='joint'?' active-joint':'')} onClick={()=>update('type','joint')}>공동</button>
+            <button type="button" className={"toggle-btn"+(effectiveType==='personal'?' active-personal':'')} onClick={()=>update('type','personal')}>개인</button>
+          </div>
+        </div>
+        <div className="field">
+          <label>입력자</label>
+          <select value={form.who} onChange={e=>update('who',e.target.value)}>
+            {WHO_OPTIONS.map(w=><option key={w} value={w}>{w}</option>)}
+          </select>
+        </div>
+        <div className="field">
+          <label>메모</label>
+          <input value={form.memo} onChange={e=>update('memo',e.target.value)} placeholder="선택 입력"/>
+        </div>
+        <div style={{display:'flex',justifyContent:'flex-end',gap:8,marginTop:20}}>
+          <button className="btn-ghost" onClick={onClose}>취소</button>
+          <button className="btn-primary" onClick={submit}>저장</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Dashboard({transactions, categories}){
+  const now = new Date();
+  const curMonth = now.toISOString().slice(0,7);
+  const monthTx = transactions.filter(t=>monthKey(t.date)===curMonth);
+  const totalOut = monthTx.reduce((s,t)=>s+t.amount,0);
+  const jointOut = monthTx.filter(t=>t.type==='joint').reduce((s,t)=>s+t.amount,0);
+  const personalOut = monthTx.filter(t=>t.type==='personal').reduce((s,t)=>s+t.amount,0);
+  const savingTx = monthTx.filter(t=>t.categoryId==='saving').reduce((s,t)=>s+t.amount,0);
+  // naive: assume income unknown, so savings rate shown is proportion of saving-category spend among total outflow (placeholder metric until income input exists)
+  const savingsRate = totalOut>0 ? (savingTx/totalOut*100) : 0;
+
+  const byCategory = {};
+  monthTx.forEach(t=>{
+    byCategory[t.categoryId] = (byCategory[t.categoryId]||0)+t.amount;
+  });
+  const catRanked = Object.entries(byCategory).sort((a,b)=>b[1]-a[1]).slice(0,5);
+  const catName = id => categories.find(c=>c.id===id)?.name || id;
+
+  return (
+    <div>
+      <h1 className="page-title">대시보드</h1>
+      <p className="subtitle">{curMonth} 기준 우리 집 지출 흐름</p>
+
+      <div className="grid-2" style={{marginBottom:20}}>
+        <div className="card">
+          <div className="grid-3">
+            <div>
+              <p className="stat-label">이번 달 총 지출</p>
+              <p className="stat-value">{fmtWon(totalOut)}</p>
+            </div>
+            <div>
+              <p className="stat-label">공동 지출 <span className="pill joint" style={{marginLeft:4}}>공동</span></p>
+              <p className="stat-value" style={{color:'var(--joint)'}}>{fmtWon(jointOut)}</p>
+            </div>
+            <div>
+              <p className="stat-label">개인 지출 <span className="pill personal" style={{marginLeft:4}}>개인</span></p>
+              <p className="stat-value" style={{color:'var(--personal)'}}>{fmtWon(personalOut)}</p>
+            </div>
+          </div>
+          <div style={{marginTop:22}}>
+            <p className="stat-label" style={{marginBottom:8}}>카테고리 TOP 5</p>
+            {catRanked.length===0 && <p style={{fontSize:13,color:'var(--ink-soft)'}}>이번 달 기록된 지출이 없어요.</p>}
+            {catRanked.map(([id,amt])=>{
+              const pct = totalOut>0? (amt/totalOut*100):0;
+              return (
+                <div key={id} style={{marginBottom:9}}>
+                  <div style={{display:'flex',justifyContent:'space-between',fontSize:12.5,marginBottom:4}}>
+                    <span>{catName(id)}</span>
+                    <span className="mono">{fmtWon(amt)}</span>
+                  </div>
+                  <div style={{height:6,background:'var(--line)',borderRadius:99}}>
+                    <div style={{height:6,width:pct+'%',background:'var(--joint)',borderRadius:99}}></div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="card" style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center'}}>
+          <GrowthRing rate={savingsRate} target={30}/>
+          <p style={{fontSize:12,color:'var(--ink-soft)',textAlign:'center',marginTop:10,lineHeight:1.5}}>
+            저축/투자 카테고리 지출이<br/>전체 지출에서 차지하는 비중<br/>
+            <span style={{fontSize:11}}>(수입 입력 기능 추가 시 정확한 저축률로 업그레이드 예정)</span>
+          </p>
+        </div>
+      </div>
+
+      <div className="card">
+        <p className="stat-label" style={{marginBottom:10}}>최근 거래</p>
+        {transactions.length===0 ? (
+          <div className="empty">
+            <p className="display">아직 기록된 거래가 없어요</p>
+            <p style={{fontSize:13}}>거래 내역 탭에서 첫 지출을 추가해보세요.</p>
+          </div>
+        ) : (
+          <table>
+            <thead><tr><th>날짜</th><th>카테고리</th><th>구분</th><th>입력자</th><th style={{textAlign:'right'}}>금액</th></tr></thead>
+            <tbody>
+              {[...transactions].sort((a,b)=>b.date.localeCompare(a.date)).slice(0,6).map(t=>(
+                <tr key={t.id}>
+                  <td className="mono" data-label="날짜">{t.date}</td>
+                  <td data-label="카테고리">{catName(t.categoryId)}</td>
+                  <td data-label="구분"><span className={"pill "+t.type}>{t.type==='joint'?'공동':'개인'}</span></td>
+                  <td data-label="입력자">{t.who}</td>
+                  <td className="amount" data-label="금액">{fmtWon(t.amount)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Transactions({transactions, categories, onAdd, onEdit, onDelete}){
+  const [showModal,setShowModal]=useState(false);
+  const [editing,setEditing]=useState(null);
+  const [filterCat,setFilterCat]=useState('all');
+  const [filterType,setFilterType]=useState('all');
+  const [filterWho,setFilterWho]=useState('all');
+
+  const catName = id => categories.find(c=>c.id===id)?.name || id;
+
+  const filtered = transactions.filter(t=>
+    (filterCat==='all'||t.categoryId===filterCat) &&
+    (filterType==='all'||t.type===filterType) &&
+    (filterWho==='all'||t.who===filterWho)
+  ).sort((a,b)=>b.date.localeCompare(a.date));
+
+  return (
+    <div>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:20}}>
+        <div>
+          <h1 className="page-title">거래 내역</h1>
+          <p className="subtitle" style={{margin:0}}>총 {transactions.length}건</p>
+        </div>
+        <button className="btn-primary" onClick={()=>{setEditing(null);setShowModal(true);}}>+ 거래 추가</button>
+      </div>
+
+      <div className="filter-bar">
+        <select value={filterCat} onChange={e=>setFilterCat(e.target.value)}>
+          <option value="all">전체 카테고리</option>
+          {categories.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
+        </select>
+        <select value={filterType} onChange={e=>setFilterType(e.target.value)}>
+          <option value="all">공동/개인 전체</option>
+          <option value="joint">공동</option>
+          <option value="personal">개인</option>
+        </select>
+        <select value={filterWho} onChange={e=>setFilterWho(e.target.value)}>
+          <option value="all">입력자 전체</option>
+          {WHO_OPTIONS.map(w=><option key={w} value={w}>{w}</option>)}
+        </select>
+      </div>
+
+      <div className="card">
+        {filtered.length===0 ? (
+          <div className="empty">
+            <p className="display">조건에 맞는 거래가 없어요</p>
+          </div>
+        ) : (
+          <table>
+            <thead>
+              <tr><th>날짜</th><th>카테고리</th><th>구분</th><th>입력자</th><th>메모</th><th style={{textAlign:'right'}}>금액</th><th></th></tr>
+            </thead>
+            <tbody>
+              {filtered.map(t=>(
+                <tr key={t.id}>
+                  <td className="mono" data-label="날짜">{t.date}</td>
+                  <td data-label="카테고리">{catName(t.categoryId)}</td>
+                  <td data-label="구분"><span className={"pill "+t.type}>{t.type==='joint'?'공동':'개인'}</span></td>
+                  <td data-label="입력자">{t.who}</td>
+                  <td data-label="메모" style={{color:'var(--ink-soft)'}}>{t.memo||'—'}</td>
+                  <td className="amount" data-label="금액">{fmtWon(t.amount)}</td>
+                  <td data-label="관리" style={{whiteSpace:'nowrap'}}>
+                    <button className="btn-icon" onClick={()=>{setEditing(t);setShowModal(true);}}>수정</button>
+                    <button className="btn-icon" onClick={()=>{ if(window.confirm('이 거래를 삭제할까요?')) onDelete(t.id); }}>삭제</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {showModal && (
+        <AddTransactionModal
+          categories={categories}
+          initial={editing}
+          onClose={()=>setShowModal(false)}
+          onSave={(tx)=>{ editing?onEdit(tx):onAdd(tx); setShowModal(false); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function CsvUpload({categories, onImport}){
+  const [rows,setRows]=useState(null); // raw parsed rows
+  const [headers,setHeaders]=useState([]);
+  const [mapping,setMapping]=useState({date:'',amount:'',desc:''});
+  const [preview,setPreview]=useState([]);
+  const fileRef = useRef(null);
+
+  function handleFile(e){
+    const file = e.target.files[0];
+    if(!file) return;
+    Papa.parse(file, {
+      header:true,
+      skipEmptyLines:true,
+      complete: (res)=>{
+        setHeaders(res.meta.fields||[]);
+        setRows(res.data);
+        // naive auto-guess mapping
+        const fields = res.meta.fields||[];
+        const guess = (cands)=> fields.find(f=>cands.some(c=>f.includes(c))) || '';
+        setMapping({
+          date: guess(['날짜','일자','date','Date']),
+          amount: guess(['금액','출금','amount','Amount']),
+          desc: guess(['내용','가맹점','적요','description','Description'])
+        });
+      }
+    });
+  }
+
+  function buildPreview(){
+    if(!rows) return;
+    const built = rows.map((r,i)=>{
+      const rawAmount = (r[mapping.amount]||'0').toString().replace(/[^0-9.-]/g,'');
+      const amount = Math.abs(Number(rawAmount)||0);
+      const desc = r[mapping.desc]||'';
+      const guessedCat = guessCategory(desc, categories) || 'etc';
+      const cat = categories.find(c=>c.id===guessedCat);
+      return {
+        _rowId: 'csv_'+i,
+        date: r[mapping.date]||'',
+        amount,
+        desc,
+        categoryId: guessedCat,
+        type: cat?cat.type:'personal',
+        who: WHO_OPTIONS[0],
+        include: true,
+      };
+    }).filter(r=>r.amount>0);
+    setPreview(built);
+  }
+
+  function updatePreviewRow(idx, patch){
+    setPreview(p=>p.map((r,i)=>i===idx?{...r,...patch}:r));
+  }
+
+  function confirmImport(){
+    const toImport = preview.filter(r=>r.include).map(r=>({
+      id:'tx_'+Date.now()+Math.random().toString(36).slice(2,7),
+      date:r.date, amount:r.amount, categoryId:r.categoryId, type:r.type, who:r.who, memo:r.desc, source:'csv'
+    }));
+    onImport(toImport);
+    setRows(null); setPreview([]); setHeaders([]);
+    if(fileRef.current) fileRef.current.value='';
+  }
+
+  return (
+    <div>
+      <h1 className="page-title">CSV 업로드</h1>
+      <p className="subtitle">은행/카드 CSV를 업로드하고 컬럼을 매핑하면, 이후엔 같은 형식을 자동 인식해요.</p>
+
+      {!rows && (
+        <div className="card" style={{textAlign:'center',padding:'44px 20px'}}>
+          <p className="display" style={{fontSize:17,marginBottom:8}}>CSV 파일을 선택하세요</p>
+          <p style={{fontSize:13,color:'var(--ink-soft)',marginBottom:18}}>은행/카드사 어디서 받은 파일이든 괜찮아요. 컬럼 매핑은 다음 단계에서 해요.</p>
+          <input ref={fileRef} type="file" accept=".csv" onChange={handleFile} style={{maxWidth:280,margin:'0 auto'}}/>
+        </div>
+      )}
+
+      {rows && preview.length===0 && (
+        <div className="card">
+          <p className="stat-label" style={{marginBottom:12}}>컬럼 매핑 ({headers.length}개 컬럼 인식됨)</p>
+          <div className="row-2" style={{marginBottom:12}}>
+            <div className="field">
+              <label>날짜 컬럼</label>
+              <select className="map-select" value={mapping.date} onChange={e=>setMapping(m=>({...m,date:e.target.value}))}>
+                <option value="">선택</option>
+                {headers.map(h=><option key={h} value={h}>{h}</option>)}
+              </select>
+            </div>
+            <div className="field">
+              <label>금액 컬럼</label>
+              <select className="map-select" value={mapping.amount} onChange={e=>setMapping(m=>({...m,amount:e.target.value}))}>
+                <option value="">선택</option>
+                {headers.map(h=><option key={h} value={h}>{h}</option>)}
+              </select>
+            </div>
+          </div>
+          <div className="field" style={{maxWidth:'50%'}}>
+            <label>내용/가맹점 컬럼 (카테고리 자동 추천에 사용)</label>
+            <select className="map-select" value={mapping.desc} onChange={e=>setMapping(m=>({...m,desc:e.target.value}))}>
+              <option value="">선택</option>
+              {headers.map(h=><option key={h} value={h}>{h}</option>)}
+            </select>
+          </div>
+          <div style={{display:'flex',justifyContent:'flex-end',gap:8,marginTop:16}}>
+            <button className="btn-ghost" onClick={()=>{setRows(null);setHeaders([]);}}>취소</button>
+            <button className="btn-primary" disabled={!mapping.date||!mapping.amount} onClick={buildPreview}>미리보기</button>
+          </div>
+        </div>
+      )}
+
+      {preview.length>0 && (
+        <div className="card">
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
+            <p className="stat-label" style={{margin:0}}>미리보기 — {preview.length}건 (카테고리는 키워드로 자동 추천됐어요, 필요시 수정하세요)</p>
+          </div>
+          <div style={{maxHeight:380,overflow:'auto'}}>
+            <table className="csv-table">
+              <thead>
+                <tr><th></th><th>날짜</th><th>내용</th><th style={{textAlign:'right'}}>금액</th><th>카테고리</th><th>구분</th><th>입력자</th></tr>
+              </thead>
+              <tbody>
+                {preview.map((r,i)=>(
+                  <tr key={r._rowId} style={{opacity:r.include?1:0.4}}>
+                    <td><input type="checkbox" checked={r.include} onChange={e=>updatePreviewRow(i,{include:e.target.checked})}/></td>
+                    <td className="mono">{r.date}</td>
+                    <td>{r.desc}</td>
+                    <td className="amount">{fmtWon(r.amount)}</td>
+                    <td>
+                      <select value={r.categoryId} onChange={e=>{
+                        const cat = categories.find(c=>c.id===e.target.value);
+                        updatePreviewRow(i,{categoryId:e.target.value, type: cat?cat.type:r.type});
+                      }}>
+                        {categories.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
+                      </select>
+                    </td>
+                    <td>
+                      <select value={r.type} onChange={e=>updatePreviewRow(i,{type:e.target.value})}>
+                        <option value="joint">공동</option>
+                        <option value="personal">개인</option>
+                      </select>
+                    </td>
+                    <td>
+                      <select value={r.who} onChange={e=>updatePreviewRow(i,{who:e.target.value})}>
+                        {WHO_OPTIONS.map(w=><option key={w} value={w}>{w}</option>)}
+                      </select>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div style={{display:'flex',justifyContent:'flex-end',gap:8,marginTop:16}}>
+            <button className="btn-ghost" onClick={()=>{setRows(null);setPreview([]);setHeaders([]);}}>취소</button>
+            <button className="btn-primary" onClick={confirmImport}>{preview.filter(r=>r.include).length}건 가져오기</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CategorySettings({categories, setCategories}){
+  const [newKeyword, setNewKeyword] = useState({});
+
+  function updateCat(id, patch){
+    setCategories(cs=>cs.map(c=>c.id===id?{...c,...patch}:c));
+  }
+  function addKeyword(id){
+    const kw = (newKeyword[id]||'').trim();
+    if(!kw) return;
+    updateCat(id,{keywords:[...(categories.find(c=>c.id===id).keywords),kw]});
+    setNewKeyword(n=>({...n,[id]:''}));
+  }
+  function removeKeyword(id, kw){
+    updateCat(id,{keywords: categories.find(c=>c.id===id).keywords.filter(k=>k!==kw)});
+  }
+  function addCategory(){
+    const name = prompt('새 카테고리 이름');
+    if(!name) return;
+    setCategories(cs=>[...cs,{id:'cat_'+Date.now(), name, type:'personal', keywords:[]}]);
+  }
+
+  return (
+    <div>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:20}}>
+        <div>
+          <h1 className="page-title">카테고리 설정</h1>
+          <p className="subtitle" style={{margin:0}}>카테고리별 공동/개인 기본값과 CSV 자동분류용 키워드를 관리해요.</p>
+        </div>
+        <button className="btn-primary" onClick={addCategory}>+ 카테고리 추가</button>
+      </div>
+
+      <div className="card">
+        {categories.map(c=>(
+          <div key={c.id} style={{padding:'14px 0',borderBottom:'1px solid var(--line)'}}>
+            <div style={{display:'flex',alignItems:'center',gap:14,marginBottom:8}}>
+              <span className="cat-name" style={{minWidth:130}}>{c.name}</span>
+              <div className="toggle-row" style={{maxWidth:180}}>
+                <button className={"toggle-btn"+(c.type==='joint'?' active-joint':'')} onClick={()=>updateCat(c.id,{type:'joint'})}>공동</button>
+                <button className={"toggle-btn"+(c.type==='personal'?' active-personal':'')} onClick={()=>updateCat(c.id,{type:'personal'})}>개인</button>
+              </div>
+            </div>
+            <div style={{display:'flex',flexWrap:'wrap',alignItems:'center',gap:4}}>
+              {c.keywords.map(kw=>(
+                <span key={kw} className="keyword-tag">{kw}<button onClick={()=>removeKeyword(c.id,kw)}>×</button></span>
+              ))}
+              <input
+                placeholder="키워드 추가 후 Enter"
+                style={{width:150,padding:'4px 8px',fontSize:12}}
+                value={newKeyword[c.id]||''}
+                onChange={e=>setNewKeyword(n=>({...n,[c.id]:e.target.value}))}
+                onKeyDown={e=>{ if(e.key==='Enter'){ addKeyword(c.id); } }}
+              />
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function App(){
+  const isOnline = !!supabase;
+  const [state,setState]=useState(isOnline ? {transactions:[], categories:[]} : loadLocal());
+  const [tab,setTab]=useState('dashboard');
+  const [syncStatus,setSyncStatus]=useState(isOnline ? 'connecting' : 'local');
+
+  // 로컬 폴백 저장
+  useEffect(()=>{ if(!isOnline) saveLocal(state); },[state, isOnline]);
+
+  // 최초 로드 + 실시간 구독
+  useEffect(()=>{
+    if(!isOnline) return;
+    let cancelled = false;
+
+    async function init(){
+      const [{data:cats, error:catErr}, {data:txs, error:txErr}] = await Promise.all([
+        supabase.from('categories').select('*').order('created_at'),
+        supabase.from('transactions').select('*').order('date',{ascending:false}),
+      ]);
+      if(cancelled) return;
+      if(catErr || txErr){ console.error(catErr||txErr); setSyncStatus('error'); return; }
+      setState({
+        categories: (cats||[]).map(dbToCat),
+        transactions: (txs||[]).map(dbToTx),
+      });
+      setSyncStatus('live');
+    }
+    init();
+
+    const channel = supabase.channel('ledger-sync')
+      .on('postgres_changes',{event:'*',schema:'public',table:'transactions'}, payload=>{
+        setState(s=>{
+          if(payload.eventType==='INSERT'){
+            if(s.transactions.some(t=>t.id===payload.new.id)) return s;
+            return {...s, transactions:[dbToTx(payload.new), ...s.transactions]};
+          }
+          if(payload.eventType==='UPDATE'){
+            return {...s, transactions:s.transactions.map(t=>t.id===payload.new.id?dbToTx(payload.new):t)};
+          }
+          if(payload.eventType==='DELETE'){
+            return {...s, transactions:s.transactions.filter(t=>t.id!==payload.old.id)};
+          }
+          return s;
+        });
+      })
+      .on('postgres_changes',{event:'*',schema:'public',table:'categories'}, payload=>{
+        setState(s=>{
+          if(payload.eventType==='INSERT'){
+            if(s.categories.some(c=>c.id===payload.new.id)) return s;
+            return {...s, categories:[...s.categories, dbToCat(payload.new)]};
+          }
+          if(payload.eventType==='UPDATE'){
+            return {...s, categories:s.categories.map(c=>c.id===payload.new.id?dbToCat(payload.new):c)};
+          }
+          if(payload.eventType==='DELETE'){
+            return {...s, categories:s.categories.filter(c=>c.id!==payload.old.id)};
+          }
+          return s;
+        });
+      })
+      .subscribe();
+
+    return ()=>{ cancelled=true; supabase.removeChannel(channel); };
+  },[isOnline]);
+
+  // ---- 거래 CRUD ----
+  async function addTx(tx){
+    if(isOnline){
+      setState(s=>({...s, transactions:[tx, ...s.transactions]})); // 낙관적 반영
+      const {error} = await supabase.from('transactions').insert([txToDb(tx)]);
+      if(error) console.error(error);
+    } else {
+      setState(s=>({...s, transactions:[...s.transactions, tx]}));
+    }
+  }
+  async function editTx(tx){
+    setState(s=>({...s, transactions:s.transactions.map(t=>t.id===tx.id?tx:t)}));
+    if(isOnline){
+      const {error} = await supabase.from('transactions').update(txToDb(tx)).eq('id',tx.id);
+      if(error) console.error(error);
+    }
+  }
+  async function deleteTx(id){
+    setState(s=>({...s, transactions:s.transactions.filter(t=>t.id!==id)}));
+    if(isOnline){
+      const {error} = await supabase.from('transactions').delete().eq('id',id);
+      if(error) console.error(error);
+    }
+  }
+  async function importTx(list){
+    if(isOnline){
+      setState(s=>({...s, transactions:[...list, ...s.transactions]}));
+      const {error} = await supabase.from('transactions').insert(list.map(txToDb));
+      if(error) console.error(error);
+    } else {
+      setState(s=>({...s, transactions:[...s.transactions, ...list]}));
+    }
+  }
+  // ---- 카테고리 CRUD ----
+  async function setCategories(fn){
+    const prevCats = state.categories;
+    const nextCats = typeof fn==='function'?fn(prevCats):fn;
+    setState(s=>({...s, categories: nextCats}));
+    if(!isOnline) return;
+    // 변경분/신규분만 upsert
+    const prevIds = new Set(prevCats.map(c=>c.id));
+    for(const c of nextCats){
+      const prev = prevCats.find(p=>p.id===c.id);
+      if(!prev || JSON.stringify(prev)!==JSON.stringify(c)){
+        const {error} = await supabase.from('categories').upsert({id:c.id,name:c.name,type:c.type,keywords:c.keywords});
+        if(error) console.error(error);
+      }
+    }
+  }
+
+  return (
+    <div className="app">
+      <Sidebar tab={tab} setTab={setTab}/>
+      <div className="main">
+        <SyncBadge status={syncStatus}/>
+        {tab==='dashboard' && <Dashboard transactions={state.transactions} categories={state.categories}/>}
+        {tab==='transactions' && <Transactions transactions={state.transactions} categories={state.categories} onAdd={addTx} onEdit={editTx} onDelete={deleteTx}/>}
+        {tab==='csv' && <CsvUpload categories={state.categories} onImport={importTx}/>}
+        {tab==='categories' && <CategorySettings categories={state.categories} setCategories={setCategories}/>}
+      </div>
+    </div>
+  );
+}
+
+function SyncBadge({status}){
+  const map = {
+    local:{label:'로컬 저장 모드 (Supabase 미연결)', color:'var(--ink-soft)'},
+    connecting:{label:'연결 중…', color:'var(--gold)'},
+    live:{label:'실시간 동기화 중', color:'var(--joint)'},
+    error:{label:'동기화 오류 — 콘솔 확인', color:'var(--danger)'},
+  };
+  const s = map[status]||map.local;
+  return (
+    <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:16,fontSize:12,color:s.color}}>
+      <span style={{width:7,height:7,borderRadius:99,background:s.color,display:'inline-block'}}></span>
+      {s.label}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
