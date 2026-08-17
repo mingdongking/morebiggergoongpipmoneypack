@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>우리집 가계부</title>
+<title>더커진궁핍한돈주머니</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" as="style" crossorigin href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css" />
@@ -55,7 +55,7 @@
     backdrop-filter:blur(var(--blur)) saturate(160%);
     border-right:1px solid var(--glass-border);
   }
-  .brand{font-family:'Pretendard',sans-serif;font-weight:700;font-size:20px;margin:0 8px 28px;color:var(--ink);}
+  .brand{font-family:'Pretendard',sans-serif;font-weight:700;font-size:16px;line-height:1.3;margin:0 8px 28px;color:var(--ink);}
   .brand span{color:var(--joint);}
   .navitem{display:flex;align-items:center;gap:10px;padding:11px 12px;border-radius:12px;cursor:pointer;font-size:14.5px;color:var(--ink-soft);transition:background .15s,color .15s;}
   .navitem:hover{background:rgba(255,255,255,0.5);}
@@ -361,7 +361,7 @@ function Sidebar({tab,setTab}){
   ];
   return (
     <div className="rail">
-      <div className="brand">우리집 <span>가계부</span></div>
+      <div className="brand">더커진궁핍한<span>돈주머니</span></div>
       {items.map(it=>(
         <div key={it.id} className={"navitem"+(tab===it.id?' active':'')} onClick={()=>setTab(it.id)}>{it.label}</div>
       ))}
@@ -508,6 +508,9 @@ function AddTransactionModal({categories, paymentMethods, onClose, onSave, initi
 
 function Dashboard({transactions, categories, loans, paymentMethods, assets}){
   const [viewMode,setViewMode] = useState('purchase'); // 'purchase' | 'billing'
+  const [periodPreset,setPeriodPreset] = useState('thisMonth');
+  const [periodFrom,setPeriodFrom] = useState('');
+  const [periodTo,setPeriodTo] = useState('');
   const now = new Date();
   const curMonth = now.toISOString().slice(0,7);
   const pmMap = {};
@@ -518,7 +521,37 @@ function Dashboard({transactions, categories, loans, paymentMethods, assets}){
     return getBillingMonthKey(t.date, pmMap[t.paymentMethodId]);
   }
 
-  const monthTx = transactions.filter(t=>effectiveMonthKey(t)===curMonth);
+  function presetRangeDash(preset){
+    const y=now.getFullYear(), m=now.getMonth();
+    const fmt = d=>d.toISOString().slice(0,10);
+    if(preset==='thisMonth') return {from:fmt(new Date(y,m,1)), to:fmt(new Date(y,m+1,0))};
+    if(preset==='lastMonth') return {from:fmt(new Date(y,m-1,1)), to:fmt(new Date(y,m,0))};
+    if(preset==='last3') return {from:fmt(new Date(y,m-2,1)), to:fmt(new Date(y,m+1,0))};
+    if(preset==='last6') return {from:fmt(new Date(y,m-5,1)), to:fmt(new Date(y,m+1,0))};
+    if(preset==='thisYear') return {from:fmt(new Date(y,0,1)), to:fmt(new Date(y,11,31))};
+    return {from:'', to:''}; // 'all'
+  }
+  const activeRange = periodPreset==='custom' ? {from:periodFrom, to:periodTo} : presetRangeDash(periodPreset);
+  const fromKey = activeRange.from ? monthKey(activeRange.from) : null;
+  const toKey = activeRange.to ? monthKey(activeRange.to) : null;
+
+  const periodLabel = (()=>{
+    if(periodPreset==='thisMonth') return `${curMonth} (이번 달)`;
+    if(periodPreset==='lastMonth') return '지난 달';
+    if(periodPreset==='last3') return '최근 3개월';
+    if(periodPreset==='last6') return '최근 6개월';
+    if(periodPreset==='thisYear') return `${now.getFullYear()}년 전체`;
+    if(periodPreset==='all') return '전체 기간';
+    if(periodPreset==='custom') return `${periodFrom||'?'} ~ ${periodTo||'?'}`;
+    return curMonth;
+  })();
+
+  const monthTx = transactions.filter(t=>{
+    const k = effectiveMonthKey(t);
+    if(fromKey && k<fromKey) return false;
+    if(toKey && k>toKey) return false;
+    return true;
+  });
   const monthExpenseTx = monthTx.filter(t=>(t.flow||'expense')==='expense');
   const monthIncomeTx = monthTx.filter(t=>t.flow==='income');
 
@@ -564,31 +597,51 @@ function Dashboard({transactions, categories, loans, paymentMethods, assets}){
 
   return (
     <div>
-      <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',flexWrap:'wrap',gap:10,marginBottom:6}}>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',flexWrap:'wrap',gap:10,marginBottom:10}}>
         <div>
           <h1 className="page-title" style={{marginBottom:6}}>대시보드</h1>
-          <p className="subtitle" style={{margin:0}}>{curMonth} 기준 우리 집 돈 흐름</p>
+          <p className="subtitle" style={{margin:0}}>{periodLabel} 기준 우리 집 돈 흐름</p>
         </div>
         <div className="toggle-row" style={{width:'auto',maxWidth:280}}>
           <button type="button" className={"toggle-btn"+(viewMode==='purchase'?' active-joint':'')} onClick={()=>setViewMode('purchase')}>구매일 기준</button>
           <button type="button" className={"toggle-btn"+(viewMode==='billing'?' active-joint':'')} onClick={()=>setViewMode('billing')}>출금일 기준</button>
         </div>
       </div>
+
+      <div className="filter-bar" style={{marginBottom:8}}>
+        <select value={periodPreset} onChange={e=>setPeriodPreset(e.target.value)}>
+          <option value="thisMonth">이번 달</option>
+          <option value="lastMonth">지난 달</option>
+          <option value="last3">최근 3개월</option>
+          <option value="last6">최근 6개월</option>
+          <option value="thisYear">올해</option>
+          <option value="all">전체 기간</option>
+          <option value="custom">기간 직접 지정</option>
+        </select>
+        {periodPreset==='custom' && (
+          <React.Fragment>
+            <input type="date" value={periodFrom} onChange={e=>setPeriodFrom(e.target.value)} style={{width:'auto'}}/>
+            <span style={{color:'var(--ink-soft)',fontSize:13}}>~</span>
+            <input type="date" value={periodTo} onChange={e=>setPeriodTo(e.target.value)} style={{width:'auto'}}/>
+          </React.Fragment>
+        )}
+      </div>
+
       <p style={{fontSize:11.5,color:'var(--ink-soft)',marginBottom:20}}>
-        {viewMode==='purchase' ? '실제 구매/사용한 날짜 기준으로 이번 달을 집계해요.' : '카드 결제수단에 등록된 이용마감일/결제일 기준으로, 실제 통장에서 빠져나가는 달로 집계해요.'}
+        {viewMode==='purchase' ? '실제 구매/사용한 날짜 기준으로 집계해요.' : '카드 결제수단에 등록된 이용마감일/결제일 기준으로, 실제 통장에서 빠져나가는 달로 집계해요.'}
       </p>
 
       <div className="grid-3" style={{marginBottom:20}}>
         <div className="card">
-          <p className="stat-label">이번 달 수입</p>
+          <p className="stat-label">수입</p>
           <p className="stat-value" style={{color:'var(--joint)'}}>{fmtWon(totalIncome)}</p>
         </div>
         <div className="card">
-          <p className="stat-label">이번 달 지출</p>
+          <p className="stat-label">지출</p>
           <p className="stat-value">{fmtWon(totalOut)}</p>
         </div>
         <div className="card">
-          <p className="stat-label">이번 달 순 저축액</p>
+          <p className="stat-label">순 저축액</p>
           <p className="stat-value" style={{color: netThisMonth>=0 ? 'var(--joint)':'var(--danger)'}}>{fmtWon(netThisMonth)}</p>
         </div>
       </div>
@@ -607,7 +660,7 @@ function Dashboard({transactions, categories, loans, paymentMethods, assets}){
           </div>
           <div style={{marginTop:18}}>
             <p className="stat-label" style={{marginBottom:8}}>카테고리 TOP 5</p>
-            {catRanked.length===0 && <p style={{fontSize:13,color:'var(--ink-soft)'}}>이번 달 기록된 지출이 없어요.</p>}
+            {catRanked.length===0 && <p style={{fontSize:13,color:'var(--ink-soft)'}}>선택한 기간에 기록된 지출이 없어요.</p>}
             {catRanked.map(([id,amt])=>{
               const pct = totalOut>0? (amt/totalOut*100):0;
               return (
@@ -629,7 +682,7 @@ function Dashboard({transactions, categories, loans, paymentMethods, assets}){
           <GrowthRing rate={savingsRate} target={30}/>
           <p style={{fontSize:12,color:'var(--ink-soft)',textAlign:'center',marginTop:10,lineHeight:1.5}}>
             {hasIncomeData
-              ? <React.Fragment>이번 달 수입 대비<br/>실제 저축률이에요</React.Fragment>
+              ? <React.Fragment>선택 기간 수입 대비<br/>실제 저축률이에요</React.Fragment>
               : <React.Fragment>저축/투자 카테고리 지출이<br/>전체 지출에서 차지하는 비중<br/><span style={{fontSize:11}}>(수입을 입력하면 진짜 저축률로 바뀌어요)</span></React.Fragment>}
           </p>
         </div>
@@ -691,7 +744,7 @@ function Dashboard({transactions, categories, loans, paymentMethods, assets}){
         <div className="card">
           <p className="stat-label" style={{marginBottom:10}}>저축 예상 시뮬레이션</p>
           {!hasIncomeData && (
-            <p style={{fontSize:12,color:'var(--ink-soft)',marginBottom:10}}>수입을 입력하면 이번 달 순저축액을 기본값으로 채워드려요. 지금은 직접 입력해서 확인해보세요.</p>
+            <p style={{fontSize:12,color:'var(--ink-soft)',marginBottom:10}}>수입을 입력하면 선택 기간 순저축액을 기본값으로 채워드려요. 지금은 직접 입력해서 확인해보세요.</p>
           )}
           <div className="field">
             <label>월 저축 가정액 (원)</label>
