@@ -197,6 +197,7 @@ function dbToTx(row){
   return {
     id:row.id, date:row.date, amount:Number(row.amount), categoryId:row.category_id, type:row.type, who:row.who, memo:row.memo, source:row.source,
     flow: row.flow || 'expense',
+    paymentMethodId: row.payment_method_id || null,
     isInstallment: !!row.is_installment,
     installmentPrincipal: row.installment_principal!=null ? Number(row.installment_principal) : null,
     installmentTotalMonths: row.installment_total_months,
@@ -207,6 +208,7 @@ function txToDb(t){
   return {
     id:t.id, date:t.date, amount:t.amount, category_id:t.flow==='income'?null:t.categoryId, type:t.flow==='income'?null:t.type, who:t.who, memo:t.memo, source:t.source,
     flow: t.flow || 'expense',
+    payment_method_id: t.flow==='income' ? null : (t.paymentMethodId||null),
     is_installment: t.flow==='income' ? false : !!t.isInstallment,
     installment_principal: (t.flow!=='income' && t.isInstallment) ? (t.installmentPrincipal||null) : null,
     installment_total_months: (t.flow!=='income' && t.isInstallment) ? (t.installmentTotalMonths||null) : null,
@@ -215,6 +217,37 @@ function txToDb(t){
 }
 function dbToCat(row){
   return {id:row.id, name:row.name, type:row.type, keywords:row.keywords||[]};
+}
+function dbToPM(row){
+  return {
+    id:row.id, name:row.name, type:row.type,
+    closingDay: row.closing_day, paymentDay: row.payment_day,
+    paymentOffsetMonths: row.payment_offset_months!=null ? row.payment_offset_months : 1,
+    color: row.color, memo: row.memo,
+  };
+}
+function pmToDb(p){
+  return {
+    id:p.id, name:p.name, type:p.type,
+    closing_day: p.closingDay||null, payment_day: p.paymentDay||null,
+    payment_offset_months: p.paymentOffsetMonths!=null ? p.paymentOffsetMonths : 1,
+    color: p.color||null, memo: p.memo||null,
+  };
+}
+function daysInMonth(year, monthIdx){ return new Date(year, monthIdx+1, 0).getDate(); }
+
+// 카드의 이용마감일/결제일 기준으로 거래일이 실제 "출금되는 달(YYYY-MM)"을 계산
+function getBillingMonthKey(dateStr, pm){
+  if(!pm || pm.type==='cash' || !pm.closingDay || !pm.paymentDay) return monthKey(dateStr);
+  const d = new Date(dateStr+'T00:00:00');
+  const day = d.getDate();
+  let cMonth = d.getMonth(), cYear = d.getFullYear();
+  const closingEff = Math.min(pm.closingDay, daysInMonth(cYear,cMonth));
+  if(day > closingEff){ cMonth += 1; if(cMonth>11){cMonth=0;cYear+=1;} }
+  let pMonth = cMonth + (pm.paymentOffsetMonths!=null?pm.paymentOffsetMonths:1);
+  let pYear = cYear;
+  while(pMonth>11){pMonth-=12;pYear+=1;}
+  return `${pYear}-${String(pMonth+1).padStart(2,'0')}`;
 }
 function dbToLoan(row){
   return {
@@ -294,6 +327,7 @@ function Sidebar({tab,setTab}){
     {id:'dashboard',label:'대시보드'},
     {id:'transactions',label:'거래 내역'},
     {id:'loans',label:'대출 관리'},
+    {id:'paymentMethods',label:'결제수단 관리'},
     {id:'csv',label:'CSV/엑셀 업로드'},
     {id:'categories',label:'카테고리 설정'},
   ];
@@ -307,10 +341,10 @@ function Sidebar({tab,setTab}){
   );
 }
 
-function AddTransactionModal({categories, onClose, onSave, initial}){
+function AddTransactionModal({categories, paymentMethods, onClose, onSave, initial}){
   const defaults = {
     date: todayISO(), amount:'', categoryId: categories[0]?.id||'', type:'', who:WHO_OPTIONS[0], memo:'',
-    flow:'expense',
+    flow:'expense', paymentMethodId: (paymentMethods&&paymentMethods[0]?.id) || 'cash',
     isInstallment:false, installmentPrincipal:'', installmentTotalMonths:'', installmentCurrentMonth:''
   };
   const [form,setForm]=useState(initial ? {
@@ -337,6 +371,7 @@ function AddTransactionModal({categories, onClose, onSave, initial}){
       memo: form.memo,
       source: initial?initial.source:'manual',
       flow: form.flow,
+      paymentMethodId: form.flow==='income' ? null : form.paymentMethodId,
       isInstallment: form.flow==='expense' && form.isInstallment,
       installmentPrincipal: (form.flow==='expense' && form.isInstallment) ? Number(form.installmentPrincipal||0) : null,
       installmentTotalMonths: (form.flow==='expense' && form.isInstallment) ? Number(form.installmentTotalMonths) : null,
@@ -378,6 +413,12 @@ function AddTransactionModal({categories, onClose, onSave, initial}){
             <button type="button" className={"toggle-btn"+(effectiveType==='joint'?' active-joint':'')} onClick={()=>update('type','joint')}>공동</button>
             <button type="button" className={"toggle-btn"+(effectiveType==='personal'?' active-personal':'')} onClick={()=>update('type','personal')}>개인</button>
           </div>
+        </div>
+        <div className="field">
+          <label>결제수단</label>
+          <select value={form.paymentMethodId} onChange={e=>update('paymentMethodId', e.target.value)}>
+            {(paymentMethods||[]).map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
         </div>
         </React.Fragment>
         )}
@@ -437,10 +478,19 @@ function AddTransactionModal({categories, onClose, onSave, initial}){
   );
 }
 
-function Dashboard({transactions, categories, loans}){
+function Dashboard({transactions, categories, loans, paymentMethods}){
+  const [viewMode,setViewMode] = useState('purchase'); // 'purchase' | 'billing'
   const now = new Date();
   const curMonth = now.toISOString().slice(0,7);
-  const monthTx = transactions.filter(t=>monthKey(t.date)===curMonth);
+  const pmMap = {};
+  (paymentMethods||[]).forEach(p=>{ pmMap[p.id]=p; });
+
+  function effectiveMonthKey(t){
+    if(viewMode==='purchase' || t.flow==='income') return monthKey(t.date);
+    return getBillingMonthKey(t.date, pmMap[t.paymentMethodId]);
+  }
+
+  const monthTx = transactions.filter(t=>effectiveMonthKey(t)===curMonth);
   const monthExpenseTx = monthTx.filter(t=>(t.flow||'expense')==='expense');
   const monthIncomeTx = monthTx.filter(t=>t.flow==='income');
 
@@ -486,8 +536,19 @@ function Dashboard({transactions, categories, loans}){
 
   return (
     <div>
-      <h1 className="page-title">대시보드</h1>
-      <p className="subtitle">{curMonth} 기준 우리 집 돈 흐름</p>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',flexWrap:'wrap',gap:10,marginBottom:6}}>
+        <div>
+          <h1 className="page-title" style={{marginBottom:6}}>대시보드</h1>
+          <p className="subtitle" style={{margin:0}}>{curMonth} 기준 우리 집 돈 흐름</p>
+        </div>
+        <div className="toggle-row" style={{width:'auto',maxWidth:280}}>
+          <button type="button" className={"toggle-btn"+(viewMode==='purchase'?' active-joint':'')} onClick={()=>setViewMode('purchase')}>구매일 기준</button>
+          <button type="button" className={"toggle-btn"+(viewMode==='billing'?' active-joint':'')} onClick={()=>setViewMode('billing')}>출금일 기준</button>
+        </div>
+      </div>
+      <p style={{fontSize:11.5,color:'var(--ink-soft)',marginBottom:20}}>
+        {viewMode==='purchase' ? '실제 구매/사용한 날짜 기준으로 이번 달을 집계해요.' : '카드 결제수단에 등록된 이용마감일/결제일 기준으로, 실제 통장에서 빠져나가는 달로 집계해요.'}
+      </p>
 
       <div className="grid-3" style={{marginBottom:20}}>
         <div className="card">
@@ -690,21 +751,24 @@ function Dashboard({transactions, categories, loans}){
   );
 }
 
-function Transactions({transactions, categories, onAdd, onEdit, onDelete}){
+function Transactions({transactions, categories, paymentMethods, onAdd, onEdit, onDelete}){
   const [showModal,setShowModal]=useState(false);
   const [editing,setEditing]=useState(null);
   const [filterCat,setFilterCat]=useState('all');
   const [filterType,setFilterType]=useState('all');
   const [filterWho,setFilterWho]=useState('all');
   const [filterFlow,setFilterFlow]=useState('all');
+  const [filterPM,setFilterPM]=useState('all');
 
   const catName = id => categories.find(c=>c.id===id)?.name || id;
+  const pmName = id => (paymentMethods||[]).find(p=>p.id===id)?.name || null;
 
   const filtered = transactions.filter(t=>
     (filterCat==='all'||t.categoryId===filterCat) &&
     (filterType==='all'||t.type===filterType) &&
     (filterWho==='all'||t.who===filterWho) &&
-    (filterFlow==='all'||(t.flow||'expense')===filterFlow)
+    (filterFlow==='all'||(t.flow||'expense')===filterFlow) &&
+    (filterPM==='all'||t.paymentMethodId===filterPM)
   ).sort((a,b)=>b.date.localeCompare(a.date));
 
   return (
@@ -736,6 +800,10 @@ function Transactions({transactions, categories, onAdd, onEdit, onDelete}){
           <option value="all">입력자 전체</option>
           {WHO_OPTIONS.map(w=><option key={w} value={w}>{w}</option>)}
         </select>
+        <select value={filterPM} onChange={e=>setFilterPM(e.target.value)}>
+          <option value="all">결제수단 전체</option>
+          {(paymentMethods||[]).map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
+        </select>
       </div>
 
       <div className="card">
@@ -746,7 +814,7 @@ function Transactions({transactions, categories, onAdd, onEdit, onDelete}){
         ) : (
           <table>
             <thead>
-              <tr><th>날짜</th><th>카테고리</th><th>구분</th><th>입력자</th><th>메모</th><th style={{textAlign:'right'}}>금액</th><th></th></tr>
+              <tr><th>날짜</th><th>카테고리</th><th>구분</th><th>결제수단</th><th>입력자</th><th>메모</th><th style={{textAlign:'right'}}>금액</th><th></th></tr>
             </thead>
             <tbody>
               {filtered.map(t=>{
@@ -760,6 +828,7 @@ function Transactions({transactions, categories, onAdd, onEdit, onDelete}){
                       ? <span className="pill" style={{background:'var(--gold-soft)',color:'#8a6d10'}}>수입</span>
                       : <span className={"pill "+t.type}>{t.type==='joint'?'공동':'개인'}</span>}
                   </td>
+                  <td data-label="결제수단">{isIncome ? '—' : (pmName(t.paymentMethodId) || '—')}</td>
                   <td data-label="입력자">{t.who}</td>
                   <td data-label="메모" style={{color:'var(--ink-soft)'}}>
                     {t.memo||'—'}
@@ -785,6 +854,7 @@ function Transactions({transactions, categories, onAdd, onEdit, onDelete}){
       {showModal && (
         <AddTransactionModal
           categories={categories}
+          paymentMethods={paymentMethods}
           initial={editing}
           onClose={()=>setShowModal(false)}
           onSave={(tx)=>{ editing?onEdit(tx):onAdd(tx); setShowModal(false); }}
@@ -1207,6 +1277,114 @@ function Loans({loans, onAdd, onEdit, onDelete}){
   );
 }
 
+function PaymentMethodModal({onClose, onSave, initial}){
+  const [form,setForm]=useState(initial ? {...initial} : {
+    name:'', type:'card', closingDay:'', paymentDay:'', paymentOffsetMonths:1, memo:''
+  });
+  function update(k,v){ setForm(f=>({...f,[k]:v})); }
+  function submit(){
+    if(!form.name) return;
+    onSave({
+      id: initial?initial.id:'pm_'+Date.now()+Math.random().toString(36).slice(2,7),
+      name: form.name, type: form.type,
+      closingDay: form.type==='card' && form.closingDay ? Number(form.closingDay) : null,
+      paymentDay: form.type==='card' && form.paymentDay ? Number(form.paymentDay) : null,
+      paymentOffsetMonths: form.type==='card' ? Number(form.paymentOffsetMonths) : null,
+      memo: form.memo,
+    });
+  }
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" onClick={e=>e.stopPropagation()}>
+        <h2>{initial?'결제수단 수정':'결제수단 추가'}</h2>
+        <div className="field">
+          <label>이름</label>
+          <input value={form.name} onChange={e=>update('name',e.target.value)} placeholder="예: 현대카드, 국민카드"/>
+        </div>
+        <div className="field">
+          <label>유형</label>
+          <div className="toggle-row">
+            <button type="button" className={"toggle-btn"+(form.type==='card'?' active-joint':'')} onClick={()=>update('type','card')}>카드</button>
+            <button type="button" className={"toggle-btn"+(form.type==='cash'?' active-personal':'')} onClick={()=>update('type','cash')}>현금</button>
+          </div>
+        </div>
+        {form.type==='card' && (
+          <React.Fragment>
+            <div className="row-2">
+              <div className="field">
+                <label>이용마감일 (매월 며칠)</label>
+                <input type="number" min="1" max="31" placeholder="말일이면 31" value={form.closingDay} onChange={e=>update('closingDay',e.target.value)}/>
+              </div>
+              <div className="field">
+                <label>결제일 (출금일, 매월 며칠)</label>
+                <input type="number" min="1" max="31" placeholder="예: 14" value={form.paymentDay} onChange={e=>update('paymentDay',e.target.value)}/>
+              </div>
+            </div>
+            <div className="field">
+              <label>결제월</label>
+              <div className="toggle-row">
+                <button type="button" className={"toggle-btn"+(Number(form.paymentOffsetMonths)===0?' active-joint':'')} onClick={()=>update('paymentOffsetMonths',0)}>마감 당월 결제</button>
+                <button type="button" className={"toggle-btn"+(Number(form.paymentOffsetMonths)===1?' active-joint':'')} onClick={()=>update('paymentOffsetMonths',1)}>마감 익월 결제</button>
+              </div>
+            </div>
+            <p style={{fontSize:11.5,color:'var(--ink-soft)',marginTop:-8,marginBottom:14}}>예: 매월 말일 마감, 다음달 14일 결제인 카드는 이용마감일 31 / 결제일 14 / 익월 결제로 설정하세요.</p>
+          </React.Fragment>
+        )}
+        <div className="field">
+          <label>메모</label>
+          <input value={form.memo} onChange={e=>update('memo',e.target.value)} placeholder="선택 입력"/>
+        </div>
+        <div style={{display:'flex',justifyContent:'flex-end',gap:8,marginTop:20}}>
+          <button className="btn-ghost" onClick={onClose}>취소</button>
+          <button className="btn-primary" onClick={submit}>저장</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PaymentMethods({paymentMethods, onAdd, onEdit, onDelete}){
+  const [showModal,setShowModal]=useState(false);
+  const [editing,setEditing]=useState(null);
+  return (
+    <div>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:20}}>
+        <div>
+          <h1 className="page-title">결제수단 관리</h1>
+          <p className="subtitle" style={{margin:0}}>카드별 이용마감일/결제일을 등록하면, 실제 출금 기준으로 대시보드를 볼 수 있어요</p>
+        </div>
+        <button className="btn-primary" onClick={()=>{setEditing(null);setShowModal(true);}}>+ 결제수단 추가</button>
+      </div>
+      <div className="card">
+        {paymentMethods.map(p=>(
+          <div key={p.id} className="cat-row">
+            <span className="cat-name">
+              {p.name}
+              {p.type==='card' && p.closingDay && p.paymentDay && (
+                <span style={{color:'var(--ink-soft)',fontWeight:400,fontSize:12}}> · 마감 매월 {p.closingDay}일 → 결제 {p.paymentOffsetMonths?'익월':'당월'} {p.paymentDay}일</span>
+              )}
+            </span>
+            <span className={"pill "+(p.type==='card'?'joint':'personal')}>{p.type==='card'?'카드':'현금'}</span>
+            {p.id!=='cash' && (
+              <React.Fragment>
+                <button className="btn-icon" onClick={()=>{setEditing(p);setShowModal(true);}}>수정</button>
+                <button className="btn-icon" onClick={()=>{ if(window.confirm('이 결제수단을 삭제할까요? 연결된 거래의 결제수단 정보도 사라져요.')) onDelete(p.id); }}>삭제</button>
+              </React.Fragment>
+            )}
+          </div>
+        ))}
+      </div>
+      {showModal && (
+        <PaymentMethodModal
+          initial={editing}
+          onClose={()=>setShowModal(false)}
+          onSave={(p)=>{ editing?onEdit(p):onAdd(p); setShowModal(false); }}
+        />
+      )}
+    </div>
+  );
+}
+
 function CategorySettings({categories, setCategories}){
   const [newKeyword, setNewKeyword] = useState({});
 
@@ -1269,7 +1447,7 @@ function CategorySettings({categories, setCategories}){
 
 function App(){
   const isOnline = !!supabase;
-  const [state,setState]=useState(isOnline ? {transactions:[], categories:[], loans:[]} : {loans:[], ...loadLocal()});
+  const [state,setState]=useState(isOnline ? {transactions:[], categories:[], loans:[], paymentMethods:[]} : {loans:[], paymentMethods:[], ...loadLocal()});
   const [tab,setTab]=useState('dashboard');
   const [syncStatus,setSyncStatus]=useState(isOnline ? 'connecting' : 'local');
 
@@ -1282,17 +1460,19 @@ function App(){
     let cancelled = false;
 
     async function init(){
-      const [{data:cats, error:catErr}, {data:txs, error:txErr}, {data:loans, error:loanErr}] = await Promise.all([
+      const [{data:cats, error:catErr}, {data:txs, error:txErr}, {data:loans, error:loanErr}, {data:pms, error:pmErr}] = await Promise.all([
         supabase.from('categories').select('*').order('created_at'),
         supabase.from('transactions').select('*').order('date',{ascending:false}),
         supabase.from('loans').select('*').order('created_at'),
+        supabase.from('payment_methods').select('*').order('created_at'),
       ]);
       if(cancelled) return;
-      if(catErr || txErr || loanErr){ console.error(catErr||txErr||loanErr); setSyncStatus('error'); return; }
+      if(catErr || txErr || loanErr || pmErr){ console.error(catErr||txErr||loanErr||pmErr); setSyncStatus('error'); return; }
       setState({
         categories: (cats||[]).map(dbToCat),
         transactions: (txs||[]).map(dbToTx),
         loans: (loans||[]).map(dbToLoan),
+        paymentMethods: (pms||[]).map(dbToPM),
       });
       setSyncStatus('live');
     }
@@ -1340,6 +1520,21 @@ function App(){
           }
           if(payload.eventType==='DELETE'){
             return {...s, loans:s.loans.filter(l=>l.id!==payload.old.id)};
+          }
+          return s;
+        });
+      })
+      .on('postgres_changes',{event:'*',schema:'public',table:'payment_methods'}, payload=>{
+        setState(s=>{
+          if(payload.eventType==='INSERT'){
+            if(s.paymentMethods.some(p=>p.id===payload.new.id)) return s;
+            return {...s, paymentMethods:[...s.paymentMethods, dbToPM(payload.new)]};
+          }
+          if(payload.eventType==='UPDATE'){
+            return {...s, paymentMethods:s.paymentMethods.map(p=>p.id===payload.new.id?dbToPM(payload.new):p)};
+          }
+          if(payload.eventType==='DELETE'){
+            return {...s, paymentMethods:s.paymentMethods.filter(p=>p.id!==payload.old.id)};
           }
           return s;
         });
@@ -1424,14 +1619,38 @@ function App(){
     }
   }
 
+  // ---- 결제수단 CRUD ----
+  async function addPM(p){
+    setState(s=>({...s, paymentMethods:[...s.paymentMethods, p]}));
+    if(isOnline){
+      const {error} = await supabase.from('payment_methods').insert([pmToDb(p)]);
+      if(error) console.error(error);
+    }
+  }
+  async function editPM(p){
+    setState(s=>({...s, paymentMethods:s.paymentMethods.map(x=>x.id===p.id?p:x)}));
+    if(isOnline){
+      const {error} = await supabase.from('payment_methods').update(pmToDb(p)).eq('id',p.id);
+      if(error) console.error(error);
+    }
+  }
+  async function deletePM(id){
+    setState(s=>({...s, paymentMethods:s.paymentMethods.filter(p=>p.id!==id)}));
+    if(isOnline){
+      const {error} = await supabase.from('payment_methods').delete().eq('id',id);
+      if(error) console.error(error);
+    }
+  }
+
   return (
     <div className="app">
       <Sidebar tab={tab} setTab={setTab}/>
       <div className="main">
         <SyncBadge status={syncStatus}/>
-        {tab==='dashboard' && <Dashboard transactions={state.transactions} categories={state.categories} loans={state.loans}/>}
-        {tab==='transactions' && <Transactions transactions={state.transactions} categories={state.categories} onAdd={addTx} onEdit={editTx} onDelete={deleteTx}/>}
+        {tab==='dashboard' && <Dashboard transactions={state.transactions} categories={state.categories} loans={state.loans} paymentMethods={state.paymentMethods}/>}
+        {tab==='transactions' && <Transactions transactions={state.transactions} categories={state.categories} paymentMethods={state.paymentMethods} onAdd={addTx} onEdit={editTx} onDelete={deleteTx}/>}
         {tab==='loans' && <Loans loans={state.loans} onAdd={addLoan} onEdit={editLoan} onDelete={deleteLoan}/>}
+        {tab==='paymentMethods' && <PaymentMethods paymentMethods={state.paymentMethods} onAdd={addPM} onEdit={editPM} onDelete={deletePM}/>}
         {tab==='csv' && <CsvUpload categories={state.categories} onImport={importTx}/>}
         {tab==='categories' && <CategorySettings categories={state.categories} setCategories={setCategories}/>}
       </div>
