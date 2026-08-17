@@ -196,6 +196,7 @@ function saveLocal(state){
 function dbToTx(row){
   return {
     id:row.id, date:row.date, amount:Number(row.amount), categoryId:row.category_id, type:row.type, who:row.who, memo:row.memo, source:row.source,
+    flow: row.flow || 'expense',
     isInstallment: !!row.is_installment,
     installmentPrincipal: row.installment_principal!=null ? Number(row.installment_principal) : null,
     installmentTotalMonths: row.installment_total_months,
@@ -204,11 +205,12 @@ function dbToTx(row){
 }
 function txToDb(t){
   return {
-    id:t.id, date:t.date, amount:t.amount, category_id:t.categoryId, type:t.type, who:t.who, memo:t.memo, source:t.source,
-    is_installment: !!t.isInstallment,
-    installment_principal: t.isInstallment ? (t.installmentPrincipal||null) : null,
-    installment_total_months: t.isInstallment ? (t.installmentTotalMonths||null) : null,
-    installment_current_month: t.isInstallment ? (t.installmentCurrentMonth||null) : null,
+    id:t.id, date:t.date, amount:t.amount, category_id:t.flow==='income'?null:t.categoryId, type:t.flow==='income'?null:t.type, who:t.who, memo:t.memo, source:t.source,
+    flow: t.flow || 'expense',
+    is_installment: t.flow==='income' ? false : !!t.isInstallment,
+    installment_principal: (t.flow!=='income' && t.isInstallment) ? (t.installmentPrincipal||null) : null,
+    installment_total_months: (t.flow!=='income' && t.isInstallment) ? (t.installmentTotalMonths||null) : null,
+    installment_current_month: (t.flow!=='income' && t.isInstallment) ? (t.installmentCurrentMonth||null) : null,
   };
 }
 function dbToCat(row){
@@ -280,6 +282,7 @@ function Sidebar({tab,setTab}){
 function AddTransactionModal({categories, onClose, onSave, initial}){
   const defaults = {
     date: todayISO(), amount:'', categoryId: categories[0]?.id||'', type:'', who:WHO_OPTIONS[0], memo:'',
+    flow:'expense',
     isInstallment:false, installmentPrincipal:'', installmentTotalMonths:'', installmentCurrentMonth:''
   };
   const [form,setForm]=useState(initial ? {
@@ -295,20 +298,21 @@ function AddTransactionModal({categories, onClose, onSave, initial}){
 
   function submit(){
     if(!form.amount || !form.date) return;
-    if(form.isInstallment && (!form.installmentTotalMonths || !form.installmentCurrentMonth)) return;
+    if(form.flow==='expense' && form.isInstallment && (!form.installmentTotalMonths || !form.installmentCurrentMonth)) return;
     onSave({
       id: initial?initial.id: 'tx_'+Date.now()+Math.random().toString(36).slice(2,7),
       date: form.date,
       amount: Number(form.amount),
-      categoryId: form.categoryId,
-      type: effectiveType,
+      categoryId: form.flow==='income' ? null : form.categoryId,
+      type: form.flow==='income' ? null : effectiveType,
       who: form.who,
       memo: form.memo,
       source: initial?initial.source:'manual',
-      isInstallment: form.isInstallment,
-      installmentPrincipal: form.isInstallment ? Number(form.installmentPrincipal||0) : null,
-      installmentTotalMonths: form.isInstallment ? Number(form.installmentTotalMonths) : null,
-      installmentCurrentMonth: form.isInstallment ? Number(form.installmentCurrentMonth) : null,
+      flow: form.flow,
+      isInstallment: form.flow==='expense' && form.isInstallment,
+      installmentPrincipal: (form.flow==='expense' && form.isInstallment) ? Number(form.installmentPrincipal||0) : null,
+      installmentTotalMonths: (form.flow==='expense' && form.isInstallment) ? Number(form.installmentTotalMonths) : null,
+      installmentCurrentMonth: (form.flow==='expense' && form.isInstallment) ? Number(form.installmentCurrentMonth) : null,
     });
   }
 
@@ -316,6 +320,12 @@ function AddTransactionModal({categories, onClose, onSave, initial}){
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal" onClick={e=>e.stopPropagation()}>
         <h2>{initial?'거래 수정':'거래 추가'}</h2>
+        <div className="field">
+          <div className="toggle-row">
+            <button type="button" className={"toggle-btn"+(form.flow==='expense'?' active-personal':'')} onClick={()=>update('flow','expense')}>지출</button>
+            <button type="button" className={"toggle-btn"+(form.flow==='income'?' active-joint':'')} onClick={()=>update('flow','income')}>수입</button>
+          </div>
+        </div>
         <div className="row-2">
           <div className="field">
             <label>날짜</label>
@@ -326,6 +336,8 @@ function AddTransactionModal({categories, onClose, onSave, initial}){
             <input type="number" placeholder="15000" value={form.amount} onChange={e=>update('amount',e.target.value)}/>
           </div>
         </div>
+        {form.flow==='expense' && (
+        <React.Fragment>
         <div className="field">
           <label>카테고리</label>
           <select value={form.categoryId} onChange={e=>setForm(f=>({...f, categoryId:e.target.value, type:''}))}>
@@ -339,25 +351,37 @@ function AddTransactionModal({categories, onClose, onSave, initial}){
             <button type="button" className={"toggle-btn"+(effectiveType==='personal'?' active-personal':'')} onClick={()=>update('type','personal')}>개인</button>
           </div>
         </div>
+        </React.Fragment>
+        )}
+        {form.flow==='income' && (
+          <div className="field">
+            <label>수입 종류</label>
+            <input value={form.memo} onChange={e=>update('memo',e.target.value)} placeholder="예: 월급, 상여금, 부수입"/>
+          </div>
+        )}
         <div className="field">
           <label>입력자</label>
           <select value={form.who} onChange={e=>update('who',e.target.value)}>
             {WHO_OPTIONS.map(w=><option key={w} value={w}>{w}</option>)}
           </select>
         </div>
+        {form.flow==='expense' && (
         <div className="field">
           <label>메모</label>
           <input value={form.memo} onChange={e=>update('memo',e.target.value)} placeholder="선택 입력"/>
         </div>
+        )}
 
+        {form.flow==='expense' && (
         <div className="field">
           <label style={{display:'flex',alignItems:'center',gap:6,cursor:'pointer'}}>
             <input type="checkbox" style={{width:'auto'}} checked={form.isInstallment} onChange={e=>update('isInstallment', e.target.checked)}/>
             할부 결제예요
           </label>
         </div>
+        )}
 
-        {form.isInstallment && (
+        {form.flow==='expense' && form.isInstallment && (
           <div style={{background:'var(--paper)',borderRadius:10,padding:'12px 14px',marginBottom:14}}>
             <p style={{fontSize:11.5,color:'var(--ink-soft)',marginBottom:10}}>위 "금액"은 이번 달에 실제로 청구된 할부금이에요. 아래는 할부 전체 정보예요.</p>
             <div className="field">
@@ -389,42 +413,78 @@ function Dashboard({transactions, categories}){
   const now = new Date();
   const curMonth = now.toISOString().slice(0,7);
   const monthTx = transactions.filter(t=>monthKey(t.date)===curMonth);
-  const totalOut = monthTx.reduce((s,t)=>s+t.amount,0);
-  const jointOut = monthTx.filter(t=>t.type==='joint').reduce((s,t)=>s+t.amount,0);
-  const personalOut = monthTx.filter(t=>t.type==='personal').reduce((s,t)=>s+t.amount,0);
-  const savingTx = monthTx.filter(t=>t.categoryId==='saving').reduce((s,t)=>s+t.amount,0);
-  // naive: assume income unknown, so savings rate shown is proportion of saving-category spend among total outflow (placeholder metric until income input exists)
-  const savingsRate = totalOut>0 ? (savingTx/totalOut*100) : 0;
+  const monthExpenseTx = monthTx.filter(t=>(t.flow||'expense')==='expense');
+  const monthIncomeTx = monthTx.filter(t=>t.flow==='income');
+
+  const totalOut = monthExpenseTx.reduce((s,t)=>s+t.amount,0);
+  const totalIncome = monthIncomeTx.reduce((s,t)=>s+t.amount,0);
+  const jointOut = monthExpenseTx.filter(t=>t.type==='joint').reduce((s,t)=>s+t.amount,0);
+  const personalOut = monthExpenseTx.filter(t=>t.type==='personal').reduce((s,t)=>s+t.amount,0);
+  const netThisMonth = totalIncome - totalOut;
+
+  const hasIncomeData = totalIncome>0;
+  const savingTx = monthExpenseTx.filter(t=>t.categoryId==='saving').reduce((s,t)=>s+t.amount,0);
+  const savingsRate = hasIncomeData
+    ? (netThisMonth/totalIncome*100)
+    : (totalOut>0 ? (savingTx/totalOut*100) : 0);
 
   const byCategory = {};
-  monthTx.forEach(t=>{
+  monthExpenseTx.forEach(t=>{
     byCategory[t.categoryId] = (byCategory[t.categoryId]||0)+t.amount;
   });
   const catRanked = Object.entries(byCategory).sort((a,b)=>b[1]-a[1]).slice(0,5);
   const catName = id => categories.find(c=>c.id===id)?.name || id;
 
+  // 할부 현황 (전체 거래 기준, 진행중인 것만)
+  const activeInstallments = transactions.filter(t=>
+    (t.flow||'expense')==='expense' && t.isInstallment && t.installmentTotalMonths && t.installmentCurrentMonth
+  );
+  const installmentSummary = activeInstallments.map(t=>{
+    const remainingMonths = Math.max(t.installmentTotalMonths - t.installmentCurrentMonth, 0);
+    return { ...t, remainingMonths, remainingAmount: remainingMonths * t.amount, nextMonthDue: remainingMonths>=1 ? t.amount : 0 };
+  });
+  const totalInstallmentRemaining = installmentSummary.reduce((s,t)=>s+t.remainingAmount,0);
+  const totalNextMonthInstallment = installmentSummary.reduce((s,t)=>s+t.nextMonthDue,0);
+
+  // 저축 시뮬레이션
+  const [simMonthly,setSimMonthly] = useState(null);
+  const monthlySavingBase = hasIncomeData ? Math.max(netThisMonth,0) : 0;
+  const simValue = simMonthly!=null ? simMonthly : monthlySavingBase;
+  const projPeriods = [3,6,12];
+
   return (
     <div>
       <h1 className="page-title">대시보드</h1>
-      <p className="subtitle">{curMonth} 기준 우리 집 지출 흐름</p>
+      <p className="subtitle">{curMonth} 기준 우리 집 돈 흐름</p>
+
+      <div className="grid-3" style={{marginBottom:20}}>
+        <div className="card">
+          <p className="stat-label">이번 달 수입</p>
+          <p className="stat-value" style={{color:'var(--joint)'}}>{fmtWon(totalIncome)}</p>
+        </div>
+        <div className="card">
+          <p className="stat-label">이번 달 지출</p>
+          <p className="stat-value">{fmtWon(totalOut)}</p>
+        </div>
+        <div className="card">
+          <p className="stat-label">이번 달 순 저축액</p>
+          <p className="stat-value" style={{color: netThisMonth>=0 ? 'var(--joint)':'var(--danger)'}}>{fmtWon(netThisMonth)}</p>
+        </div>
+      </div>
 
       <div className="grid-2" style={{marginBottom:20}}>
         <div className="card">
-          <div className="grid-3">
-            <div>
-              <p className="stat-label">이번 달 총 지출</p>
-              <p className="stat-value">{fmtWon(totalOut)}</p>
-            </div>
+          <div className="grid-2" style={{gridTemplateColumns:'1fr 1fr',marginBottom:4}}>
             <div>
               <p className="stat-label">공동 지출 <span className="pill joint" style={{marginLeft:4}}>공동</span></p>
-              <p className="stat-value" style={{color:'var(--joint)'}}>{fmtWon(jointOut)}</p>
+              <p className="stat-value" style={{color:'var(--joint)',fontSize:20}}>{fmtWon(jointOut)}</p>
             </div>
             <div>
               <p className="stat-label">개인 지출 <span className="pill personal" style={{marginLeft:4}}>개인</span></p>
-              <p className="stat-value" style={{color:'var(--personal)'}}>{fmtWon(personalOut)}</p>
+              <p className="stat-value" style={{color:'var(--personal)',fontSize:20}}>{fmtWon(personalOut)}</p>
             </div>
           </div>
-          <div style={{marginTop:22}}>
+          <div style={{marginTop:18}}>
             <p className="stat-label" style={{marginBottom:8}}>카테고리 TOP 5</p>
             {catRanked.length===0 && <p style={{fontSize:13,color:'var(--ink-soft)'}}>이번 달 기록된 지출이 없어요.</p>}
             {catRanked.map(([id,amt])=>{
@@ -447,9 +507,65 @@ function Dashboard({transactions, categories}){
         <div className="card" style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center'}}>
           <GrowthRing rate={savingsRate} target={30}/>
           <p style={{fontSize:12,color:'var(--ink-soft)',textAlign:'center',marginTop:10,lineHeight:1.5}}>
-            저축/투자 카테고리 지출이<br/>전체 지출에서 차지하는 비중<br/>
-            <span style={{fontSize:11}}>(수입 입력 기능 추가 시 정확한 저축률로 업그레이드 예정)</span>
+            {hasIncomeData
+              ? <React.Fragment>이번 달 수입 대비<br/>실제 저축률이에요</React.Fragment>
+              : <React.Fragment>저축/투자 카테고리 지출이<br/>전체 지출에서 차지하는 비중<br/><span style={{fontSize:11}}>(수입을 입력하면 진짜 저축률로 바뀌어요)</span></React.Fragment>}
           </p>
+        </div>
+      </div>
+
+      <div className="grid-2" style={{marginBottom:20}}>
+        <div className="card">
+          <p className="stat-label" style={{marginBottom:10}}>할부 현황</p>
+          {installmentSummary.length===0 ? (
+            <p style={{fontSize:13,color:'var(--ink-soft)'}}>진행 중인 할부가 없어요.</p>
+          ) : (
+            <React.Fragment>
+              <div className="grid-2" style={{gridTemplateColumns:'1fr 1fr',marginBottom:16}}>
+                <div>
+                  <p className="stat-label">남은 할부 총액</p>
+                  <p className="stat-value" style={{fontSize:19,color:'var(--personal)'}}>{fmtWon(totalInstallmentRemaining)}</p>
+                </div>
+                <div>
+                  <p className="stat-label">다음 달 예상 할부금</p>
+                  <p className="stat-value" style={{fontSize:19}}>{fmtWon(totalNextMonthInstallment)}</p>
+                </div>
+              </div>
+              {installmentSummary.map(t=>(
+                <div key={t.id} style={{marginBottom:10}}>
+                  <div style={{display:'flex',justifyContent:'space-between',fontSize:12.5,marginBottom:4}}>
+                    <span>{t.memo || catName(t.categoryId)} · {t.installmentCurrentMonth}/{t.installmentTotalMonths}회</span>
+                    <span className="mono">잔여 {fmtWon(t.remainingAmount)}</span>
+                  </div>
+                  <div style={{height:6,background:'var(--line)',borderRadius:99}}>
+                    <div style={{height:6,width:(t.installmentCurrentMonth/t.installmentTotalMonths*100)+'%',background:'var(--gold)',borderRadius:99}}></div>
+                  </div>
+                </div>
+              ))}
+            </React.Fragment>
+          )}
+        </div>
+
+        <div className="card">
+          <p className="stat-label" style={{marginBottom:10}}>저축 예상 시뮬레이션</p>
+          {!hasIncomeData && (
+            <p style={{fontSize:12,color:'var(--ink-soft)',marginBottom:10}}>수입을 입력하면 이번 달 순저축액을 기본값으로 채워드려요. 지금은 직접 입력해서 확인해보세요.</p>
+          )}
+          <div className="field">
+            <label>월 저축 가정액 (원)</label>
+            <input type="number" value={simValue} onChange={e=>setSimMonthly(Number(e.target.value)||0)}/>
+          </div>
+          <table style={{marginTop:6}}>
+            <thead><tr><th>기간</th><th style={{textAlign:'right'}}>예상 누적액</th></tr></thead>
+            <tbody>
+              {projPeriods.map(m=>(
+                <tr key={m}>
+                  <td data-label="기간">{m}개월 후</td>
+                  <td className="amount" data-label="예상 누적액">{fmtWon(simValue*m)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </div>
 
@@ -464,15 +580,21 @@ function Dashboard({transactions, categories}){
           <table>
             <thead><tr><th>날짜</th><th>카테고리</th><th>구분</th><th>입력자</th><th style={{textAlign:'right'}}>금액</th></tr></thead>
             <tbody>
-              {[...transactions].sort((a,b)=>b.date.localeCompare(a.date)).slice(0,6).map(t=>(
+              {[...transactions].sort((a,b)=>b.date.localeCompare(a.date)).slice(0,6).map(t=>{
+                const isIncome = t.flow==='income';
+                return (
                 <tr key={t.id}>
                   <td className="mono" data-label="날짜">{t.date}</td>
-                  <td data-label="카테고리">{catName(t.categoryId)}</td>
-                  <td data-label="구분"><span className={"pill "+t.type}>{t.type==='joint'?'공동':'개인'}</span></td>
+                  <td data-label="카테고리">{isIncome?'수입':catName(t.categoryId)}</td>
+                  <td data-label="구분">
+                    {isIncome
+                      ? <span className="pill" style={{background:'var(--gold-soft)',color:'#8a6d10'}}>수입</span>
+                      : <span className={"pill "+t.type}>{t.type==='joint'?'공동':'개인'}</span>}
+                  </td>
                   <td data-label="입력자">{t.who}</td>
-                  <td className="amount" data-label="금액">{fmtWon(t.amount)}</td>
+                  <td className="amount" data-label="금액" style={{color:isIncome?'var(--joint)':'var(--ink)'}}>{isIncome?'+':''}{fmtWon(t.amount)}</td>
                 </tr>
-              ))}
+              );})}
             </tbody>
           </table>
         )}
@@ -487,13 +609,15 @@ function Transactions({transactions, categories, onAdd, onEdit, onDelete}){
   const [filterCat,setFilterCat]=useState('all');
   const [filterType,setFilterType]=useState('all');
   const [filterWho,setFilterWho]=useState('all');
+  const [filterFlow,setFilterFlow]=useState('all');
 
   const catName = id => categories.find(c=>c.id===id)?.name || id;
 
   const filtered = transactions.filter(t=>
     (filterCat==='all'||t.categoryId===filterCat) &&
     (filterType==='all'||t.type===filterType) &&
-    (filterWho==='all'||t.who===filterWho)
+    (filterWho==='all'||t.who===filterWho) &&
+    (filterFlow==='all'||(t.flow||'expense')===filterFlow)
   ).sort((a,b)=>b.date.localeCompare(a.date));
 
   return (
@@ -507,6 +631,11 @@ function Transactions({transactions, categories, onAdd, onEdit, onDelete}){
       </div>
 
       <div className="filter-bar">
+        <select value={filterFlow} onChange={e=>setFilterFlow(e.target.value)}>
+          <option value="all">수입/지출 전체</option>
+          <option value="expense">지출</option>
+          <option value="income">수입</option>
+        </select>
         <select value={filterCat} onChange={e=>setFilterCat(e.target.value)}>
           <option value="all">전체 카테고리</option>
           {categories.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
@@ -533,11 +662,17 @@ function Transactions({transactions, categories, onAdd, onEdit, onDelete}){
               <tr><th>날짜</th><th>카테고리</th><th>구분</th><th>입력자</th><th>메모</th><th style={{textAlign:'right'}}>금액</th><th></th></tr>
             </thead>
             <tbody>
-              {filtered.map(t=>(
+              {filtered.map(t=>{
+                const isIncome = t.flow==='income';
+                return (
                 <tr key={t.id}>
                   <td className="mono" data-label="날짜">{t.date}</td>
-                  <td data-label="카테고리">{catName(t.categoryId)}</td>
-                  <td data-label="구분"><span className={"pill "+t.type}>{t.type==='joint'?'공동':'개인'}</span></td>
+                  <td data-label="카테고리">{isIncome ? '수입' : catName(t.categoryId)}</td>
+                  <td data-label="구분">
+                    {isIncome
+                      ? <span className="pill" style={{background:'var(--gold-soft)',color:'#8a6d10'}}>수입</span>
+                      : <span className={"pill "+t.type}>{t.type==='joint'?'공동':'개인'}</span>}
+                  </td>
                   <td data-label="입력자">{t.who}</td>
                   <td data-label="메모" style={{color:'var(--ink-soft)'}}>
                     {t.memo||'—'}
@@ -548,13 +683,13 @@ function Transactions({transactions, categories, onAdd, onEdit, onDelete}){
                       </span>
                     )}
                   </td>
-                  <td className="amount" data-label="금액">{fmtWon(t.amount)}</td>
+                  <td className="amount" data-label="금액" style={{color:isIncome?'var(--joint)':'var(--ink)'}}>{isIncome?'+':''}{fmtWon(t.amount)}</td>
                   <td data-label="관리" style={{whiteSpace:'nowrap'}}>
                     <button className="btn-icon" onClick={()=>{setEditing(t);setShowModal(true);}}>수정</button>
                     <button className="btn-icon" onClick={()=>{ if(window.confirm('이 거래를 삭제할까요?')) onDelete(t.id); }}>삭제</button>
                   </td>
                 </tr>
-              ))}
+              );})}
             </tbody>
           </table>
         )}
