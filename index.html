@@ -181,6 +181,10 @@ const supabase = (SUPABASE_URL.startsWith('http'))
   ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
   : null;
 
+// ---------- 입장 잠금 설정 (진짜 보안 아님, 가벼운 접근 차단용) ----------
+// 결혼기념일을 8자리 숫자로 넣으세요 (예: 20240101). 주의: 이 값은 코드에 그대로 노출돼요.
+const ANNIVERSARY_DATE = '20260328';
+
 const DEFAULT_CATEGORIES = [
   {id:'housing',name:'주거/공과금',type:'joint',keywords:['관리비','도시가스','전기요금','수도요금','아파트']},
   {id:'grocery',name:'식비(장보기)',type:'joint',keywords:['마트','이마트','홈플러스','코스트코']},
@@ -2518,7 +2522,56 @@ function SyncBadge({status}){
   );
 }
 
-ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+function LockScreen({onUnlock}){
+  const [value,setValue] = useState('');
+  const [error,setError] = useState(false);
+  function submit(e){
+    e.preventDefault();
+    if(value && ANNIVERSARY_DATE!=='00000000' && value===ANNIVERSARY_DATE){
+      onUnlock();
+    } else {
+      setError(true);
+    }
+  }
+  return (
+    <div style={{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',padding:20}}>
+      <form onSubmit={submit} className="card" style={{width:'min(360px,92vw)',textAlign:'center',padding:'36px 28px'}}>
+        <p style={{fontSize:28,marginBottom:8}}>🔒</p>
+        <p className="display" style={{fontSize:17,fontWeight:700,marginBottom:6}}>더커진궁핍한돈주머니</p>
+        <p style={{fontSize:14,color:'var(--ink-soft)',marginBottom:4}}>결혼기념일을 대시오</p>
+        <p style={{fontSize:11.5,color:'var(--ink-soft)',marginBottom:18}}>8개 숫자를 입력하세요</p>
+        <input
+          type="text"
+          inputMode="numeric"
+          pattern="[0-9]*"
+          maxLength={8}
+          placeholder="········"
+          value={value}
+          onChange={e=>{setValue(e.target.value.replace(/[^0-9]/g,'').slice(0,8)); setError(false);}}
+          style={{marginBottom:14,textAlign:'center',letterSpacing:'2px',fontFamily:"'JetBrains Mono',monospace"}}
+          autoFocus
+        />
+        {error && <p style={{fontSize:12.5,color:'var(--danger)',marginBottom:12}}>땡! 다시 생각해보세요 🤔</p>}
+        <button type="submit" className="btn-primary" style={{width:'100%'}}>입장하기</button>
+      </form>
+    </div>
+  );
+}
+
+function Gate(){
+  const [unlocked,setUnlocked] = useState(()=>{
+    try{ return localStorage.getItem('anniv_unlocked')==='1'; }catch(e){ return false; }
+  });
+  if(!unlocked){
+    return <LockScreen onUnlock={()=>{
+      try{ localStorage.setItem('anniv_unlocked','1'); }catch(e){}
+      setUnlocked(true);
+    }}/>;
+  }
+  return <App/>;
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<Gate/>);
 </script>
 </body>
 </html>
