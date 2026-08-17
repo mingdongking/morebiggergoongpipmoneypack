@@ -474,6 +474,10 @@ function Dashboard({transactions, categories, loans}){
   const totalInstallmentRemaining = installmentSummary.reduce((s,t)=>s+t.remainingAmount,0);
   const totalNextMonthInstallment = installmentSummary.reduce((s,t)=>s+t.nextMonthDue,0);
 
+  // 다음 달 예상 고정 지출 (카드 할부 + 대출 월납입액)
+  const nextMonthLoanPayment = (loans||[]).reduce((s,l)=>s+(l.monthlyPayment||0),0);
+  const nextMonthFixedTotal = totalNextMonthInstallment + nextMonthLoanPayment;
+
   // 저축 시뮬레이션
   const [simMonthly,setSimMonthly] = useState(null);
   const monthlySavingBase = hasIncomeData ? Math.max(netThisMonth,0) : 0;
@@ -541,6 +545,27 @@ function Dashboard({transactions, categories, loans}){
           </p>
         </div>
       </div>
+
+      {nextMonthFixedTotal>0 && (
+        <div className="card" style={{marginBottom:20}}>
+          <p className="stat-label" style={{marginBottom:10}}>다음 달 예상 고정 지출 (카드 할부 + 대출 상환)</p>
+          <div className="grid-3">
+            <div>
+              <p className="stat-label">카드 할부</p>
+              <p className="stat-value" style={{fontSize:19}}>{fmtWon(totalNextMonthInstallment)}</p>
+            </div>
+            <div>
+              <p className="stat-label">대출 상환</p>
+              <p className="stat-value" style={{fontSize:19}}>{fmtWon(nextMonthLoanPayment)}</p>
+            </div>
+            <div>
+              <p className="stat-label">합계</p>
+              <p className="stat-value" style={{fontSize:19,color:'var(--personal)'}}>{fmtWon(nextMonthFixedTotal)}</p>
+            </div>
+          </div>
+          <p style={{fontSize:11.5,color:'var(--ink-soft)',marginTop:10}}>이 금액은 예상치예요. 실제 이체하실 때는 거래 내역에 지출로 꼭 기록해주세요.</p>
+        </div>
+      )}
 
       <div className="grid-2" style={{marginBottom:20}}>
         <div className="card">
