@@ -216,6 +216,27 @@ function txToDb(t){
 function dbToCat(row){
   return {id:row.id, name:row.name, type:row.type, keywords:row.keywords||[]};
 }
+function dbToLoan(row){
+  return {
+    id:row.id, name:row.name,
+    originalPrincipal: Number(row.original_principal),
+    remainingPrincipal: Number(row.remaining_principal),
+    monthlyPayment: row.monthly_payment!=null ? Number(row.monthly_payment) : null,
+    interestRate: row.interest_rate!=null ? Number(row.interest_rate) : null,
+    type: row.type, memo: row.memo,
+  };
+}
+function loanToDb(l){
+  return {
+    id:l.id, name:l.name,
+    original_principal: l.originalPrincipal,
+    remaining_principal: l.remainingPrincipal,
+    monthly_payment: l.monthlyPayment||null,
+    interest_rate: l.interestRate||null,
+    type: l.type||'joint', memo: l.memo||null,
+    updated_at: new Date().toISOString(),
+  };
+}
 
 function fmtWon(n){
   const sign = n<0 ? '-' : '';
@@ -266,6 +287,7 @@ function Sidebar({tab,setTab}){
   const items=[
     {id:'dashboard',label:'대시보드'},
     {id:'transactions',label:'거래 내역'},
+    {id:'loans',label:'대출 관리'},
     {id:'csv',label:'CSV/엑셀 업로드'},
     {id:'categories',label:'카테고리 설정'},
   ];
@@ -409,7 +431,7 @@ function AddTransactionModal({categories, onClose, onSave, initial}){
   );
 }
 
-function Dashboard({transactions, categories}){
+function Dashboard({transactions, categories, loans}){
   const now = new Date();
   const curMonth = now.toISOString().slice(0,7);
   const monthTx = transactions.filter(t=>monthKey(t.date)===curMonth);
@@ -568,6 +590,40 @@ function Dashboard({transactions, categories}){
           </table>
         </div>
       </div>
+
+      {loans && loans.length>0 && (
+        <div className="card" style={{marginBottom:20}}>
+          <p className="stat-label" style={{marginBottom:10}}>대출 현황</p>
+          <div className="grid-3" style={{marginBottom:14}}>
+            <div>
+              <p className="stat-label">총 남은 원금</p>
+              <p className="stat-value" style={{fontSize:19,color:'var(--personal)'}}>{fmtWon(loans.reduce((s,l)=>s+l.remainingPrincipal,0))}</p>
+            </div>
+            <div>
+              <p className="stat-label">월 납입 합계</p>
+              <p className="stat-value" style={{fontSize:19}}>{fmtWon(loans.reduce((s,l)=>s+(l.monthlyPayment||0),0))}</p>
+            </div>
+            <div>
+              <p className="stat-label">등록된 대출</p>
+              <p className="stat-value" style={{fontSize:19}}>{loans.length}건</p>
+            </div>
+          </div>
+          {loans.map(l=>{
+            const paidRatio = l.originalPrincipal>0 ? Math.min(((l.originalPrincipal-l.remainingPrincipal)/l.originalPrincipal*100),100) : 0;
+            return (
+              <div key={l.id} style={{marginBottom:9}}>
+                <div style={{display:'flex',justifyContent:'space-between',fontSize:12.5,marginBottom:4}}>
+                  <span>{l.name}</span>
+                  <span className="mono">잔여 {fmtWon(l.remainingPrincipal)} ({paidRatio.toFixed(0)}% 상환)</span>
+                </div>
+                <div style={{height:6,background:'var(--line)',borderRadius:99}}>
+                  <div style={{height:6,width:paidRatio+'%',background:'var(--joint)',borderRadius:99}}></div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       <div className="card">
         <p className="stat-label" style={{marginBottom:10}}>최근 거래</p>
@@ -935,6 +991,166 @@ function CsvUpload({categories, onImport}){
   );
 }
 
+function LoanModal({onClose, onSave, initial}){
+  const [form,setForm]=useState(initial ? {...initial} : {
+    name:'', originalPrincipal:'', remainingPrincipal:'', monthlyPayment:'', interestRate:'', type:'joint', memo:''
+  });
+  function update(k,v){ setForm(f=>({...f,[k]:v})); }
+  function submit(){
+    if(!form.name || !form.originalPrincipal || !form.remainingPrincipal) return;
+    onSave({
+      id: initial?initial.id:'loan_'+Date.now()+Math.random().toString(36).slice(2,7),
+      name: form.name,
+      originalPrincipal: Number(form.originalPrincipal),
+      remainingPrincipal: Number(form.remainingPrincipal),
+      monthlyPayment: form.monthlyPayment ? Number(form.monthlyPayment) : null,
+      interestRate: form.interestRate ? Number(form.interestRate) : null,
+      type: form.type,
+      memo: form.memo,
+    });
+  }
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" onClick={e=>e.stopPropagation()}>
+        <h2>{initial?'대출 정보 수정':'대출 추가'}</h2>
+        <div className="field">
+          <label>대출명</label>
+          <input value={form.name} onChange={e=>update('name',e.target.value)} placeholder="예: 주택담보대출 (OO은행)"/>
+        </div>
+        <div className="row-2">
+          <div className="field">
+            <label>최초 대출 원금</label>
+            <input type="number" placeholder="390000000" value={form.originalPrincipal} onChange={e=>update('originalPrincipal',e.target.value)}/>
+          </div>
+          <div className="field">
+            <label>현재 남은 원금</label>
+            <input type="number" placeholder="385000000" value={form.remainingPrincipal} onChange={e=>update('remainingPrincipal',e.target.value)}/>
+          </div>
+        </div>
+        <p style={{fontSize:11.5,color:'var(--ink-soft)',marginTop:-8,marginBottom:14}}>남은 원금은 은행 앱/명세서 기준으로 매달 직접 업데이트해주세요 (이자 비중 때문에 자동 계산이 부정확해요).</p>
+        <div className="row-2">
+          <div className="field">
+            <label>월 납입액 (선택)</label>
+            <input type="number" placeholder="2600000" value={form.monthlyPayment} onChange={e=>update('monthlyPayment',e.target.value)}/>
+          </div>
+          <div className="field">
+            <label>금리 % (선택)</label>
+            <input type="number" step="0.01" placeholder="3.5" value={form.interestRate} onChange={e=>update('interestRate',e.target.value)}/>
+          </div>
+        </div>
+        <div className="field">
+          <label>공동 / 개인</label>
+          <div className="toggle-row">
+            <button type="button" className={"toggle-btn"+(form.type==='joint'?' active-joint':'')} onClick={()=>update('type','joint')}>공동</button>
+            <button type="button" className={"toggle-btn"+(form.type==='personal'?' active-personal':'')} onClick={()=>update('type','personal')}>개인</button>
+          </div>
+        </div>
+        <div className="field">
+          <label>메모</label>
+          <input value={form.memo} onChange={e=>update('memo',e.target.value)} placeholder="선택 입력"/>
+        </div>
+        <div style={{display:'flex',justifyContent:'flex-end',gap:8,marginTop:20}}>
+          <button className="btn-ghost" onClick={onClose}>취소</button>
+          <button className="btn-primary" onClick={submit}>저장</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Loans({loans, onAdd, onEdit, onDelete}){
+  const [showModal,setShowModal]=useState(false);
+  const [editing,setEditing]=useState(null);
+
+  const totalRemaining = loans.reduce((s,l)=>s+l.remainingPrincipal,0);
+  const totalMonthly = loans.reduce((s,l)=>s+(l.monthlyPayment||0),0);
+
+  return (
+    <div>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:20}}>
+        <div>
+          <h1 className="page-title">대출 관리</h1>
+          <p className="subtitle" style={{margin:0}}>주택담보대출 등 장기상환 항목의 남은 원금을 직접 관리해요</p>
+        </div>
+        <button className="btn-primary" onClick={()=>{setEditing(null);setShowModal(true);}}>+ 대출 추가</button>
+      </div>
+
+      {loans.length>0 && (
+        <div className="grid-3" style={{marginBottom:20}}>
+          <div className="card">
+            <p className="stat-label">총 남은 원금</p>
+            <p className="stat-value" style={{color:'var(--personal)'}}>{fmtWon(totalRemaining)}</p>
+          </div>
+          <div className="card">
+            <p className="stat-label">월 납입 합계</p>
+            <p className="stat-value">{fmtWon(totalMonthly)}</p>
+          </div>
+          <div className="card">
+            <p className="stat-label">등록된 대출</p>
+            <p className="stat-value">{loans.length}건</p>
+          </div>
+        </div>
+      )}
+
+      {loans.length===0 ? (
+        <div className="card">
+          <div className="empty">
+            <p className="display">등록된 대출이 없어요</p>
+            <p style={{fontSize:13}}>주택담보대출, 학자금대출 등을 추가해서 남은 원금을 추적해보세요.</p>
+          </div>
+        </div>
+      ) : (
+        loans.map(l=>{
+          const paidRatio = l.originalPrincipal>0 ? Math.min(((l.originalPrincipal-l.remainingPrincipal)/l.originalPrincipal*100),100) : 0;
+          return (
+            <div key={l.id} className="card" style={{marginBottom:14}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:10}}>
+                <div>
+                  <div style={{display:'flex',alignItems:'center',gap:8}}>
+                    <span style={{fontWeight:600,fontSize:14.5}}>{l.name}</span>
+                    <span className={"pill "+l.type}>{l.type==='joint'?'공동':'개인'}</span>
+                  </div>
+                  {l.memo && <p style={{fontSize:12,color:'var(--ink-soft)',marginTop:4}}>{l.memo}</p>}
+                </div>
+                <div style={{display:'flex',gap:4,whiteSpace:'nowrap'}}>
+                  <button className="btn-icon" onClick={()=>{setEditing(l);setShowModal(true);}}>잔액 수정</button>
+                  <button className="btn-icon" onClick={()=>{ if(window.confirm('이 대출을 삭제할까요?')) onDelete(l.id); }}>삭제</button>
+                </div>
+              </div>
+              <div className="grid-3" style={{marginBottom:10}}>
+                <div>
+                  <p className="stat-label">남은 원금</p>
+                  <p className="stat-value" style={{fontSize:18,color:'var(--personal)'}}>{fmtWon(l.remainingPrincipal)}</p>
+                </div>
+                <div>
+                  <p className="stat-label">최초 원금</p>
+                  <p className="stat-value" style={{fontSize:18}}>{fmtWon(l.originalPrincipal)}</p>
+                </div>
+                <div>
+                  <p className="stat-label">월 납입액{l.interestRate?` · 금리 ${l.interestRate}%`:''}</p>
+                  <p className="stat-value" style={{fontSize:18}}>{l.monthlyPayment?fmtWon(l.monthlyPayment):'—'}</p>
+                </div>
+              </div>
+              <div style={{height:8,background:'var(--line)',borderRadius:99}}>
+                <div style={{height:8,width:paidRatio+'%',background:'var(--joint)',borderRadius:99}}></div>
+              </div>
+              <p style={{fontSize:11.5,color:'var(--ink-soft)',marginTop:6}}>{paidRatio.toFixed(1)}% 상환 완료</p>
+            </div>
+          );
+        })
+      )}
+
+      {showModal && (
+        <LoanModal
+          initial={editing}
+          onClose={()=>setShowModal(false)}
+          onSave={(l)=>{ editing?onEdit(l):onAdd(l); setShowModal(false); }}
+        />
+      )}
+    </div>
+  );
+}
+
 function CategorySettings({categories, setCategories}){
   const [newKeyword, setNewKeyword] = useState({});
 
@@ -997,7 +1213,7 @@ function CategorySettings({categories, setCategories}){
 
 function App(){
   const isOnline = !!supabase;
-  const [state,setState]=useState(isOnline ? {transactions:[], categories:[]} : loadLocal());
+  const [state,setState]=useState(isOnline ? {transactions:[], categories:[], loans:[]} : {loans:[], ...loadLocal()});
   const [tab,setTab]=useState('dashboard');
   const [syncStatus,setSyncStatus]=useState(isOnline ? 'connecting' : 'local');
 
@@ -1010,15 +1226,17 @@ function App(){
     let cancelled = false;
 
     async function init(){
-      const [{data:cats, error:catErr}, {data:txs, error:txErr}] = await Promise.all([
+      const [{data:cats, error:catErr}, {data:txs, error:txErr}, {data:loans, error:loanErr}] = await Promise.all([
         supabase.from('categories').select('*').order('created_at'),
         supabase.from('transactions').select('*').order('date',{ascending:false}),
+        supabase.from('loans').select('*').order('created_at'),
       ]);
       if(cancelled) return;
-      if(catErr || txErr){ console.error(catErr||txErr); setSyncStatus('error'); return; }
+      if(catErr || txErr || loanErr){ console.error(catErr||txErr||loanErr); setSyncStatus('error'); return; }
       setState({
         categories: (cats||[]).map(dbToCat),
         transactions: (txs||[]).map(dbToTx),
+        loans: (loans||[]).map(dbToLoan),
       });
       setSyncStatus('live');
     }
@@ -1051,6 +1269,21 @@ function App(){
           }
           if(payload.eventType==='DELETE'){
             return {...s, categories:s.categories.filter(c=>c.id!==payload.old.id)};
+          }
+          return s;
+        });
+      })
+      .on('postgres_changes',{event:'*',schema:'public',table:'loans'}, payload=>{
+        setState(s=>{
+          if(payload.eventType==='INSERT'){
+            if(s.loans.some(l=>l.id===payload.new.id)) return s;
+            return {...s, loans:[...s.loans, dbToLoan(payload.new)]};
+          }
+          if(payload.eventType==='UPDATE'){
+            return {...s, loans:s.loans.map(l=>l.id===payload.new.id?dbToLoan(payload.new):l)};
+          }
+          if(payload.eventType==='DELETE'){
+            return {...s, loans:s.loans.filter(l=>l.id!==payload.old.id)};
           }
           return s;
         });
@@ -1110,13 +1343,39 @@ function App(){
     }
   }
 
+  // ---- 대출 CRUD ----
+  async function addLoan(l){
+    if(isOnline){
+      setState(s=>({...s, loans:[...s.loans, l]}));
+      const {error} = await supabase.from('loans').insert([loanToDb(l)]);
+      if(error) console.error(error);
+    } else {
+      setState(s=>({...s, loans:[...s.loans, l]}));
+    }
+  }
+  async function editLoan(l){
+    setState(s=>({...s, loans:s.loans.map(x=>x.id===l.id?l:x)}));
+    if(isOnline){
+      const {error} = await supabase.from('loans').update(loanToDb(l)).eq('id',l.id);
+      if(error) console.error(error);
+    }
+  }
+  async function deleteLoan(id){
+    setState(s=>({...s, loans:s.loans.filter(l=>l.id!==id)}));
+    if(isOnline){
+      const {error} = await supabase.from('loans').delete().eq('id',id);
+      if(error) console.error(error);
+    }
+  }
+
   return (
     <div className="app">
       <Sidebar tab={tab} setTab={setTab}/>
       <div className="main">
         <SyncBadge status={syncStatus}/>
-        {tab==='dashboard' && <Dashboard transactions={state.transactions} categories={state.categories}/>}
+        {tab==='dashboard' && <Dashboard transactions={state.transactions} categories={state.categories} loans={state.loans}/>}
         {tab==='transactions' && <Transactions transactions={state.transactions} categories={state.categories} onAdd={addTx} onEdit={editTx} onDelete={deleteTx}/>}
+        {tab==='loans' && <Loans loans={state.loans} onAdd={addLoan} onEdit={editLoan} onDelete={deleteLoan}/>}
         {tab==='csv' && <CsvUpload categories={state.categories} onImport={importTx}/>}
         {tab==='categories' && <CategorySettings categories={state.categories} setCategories={setCategories}/>}
       </div>
