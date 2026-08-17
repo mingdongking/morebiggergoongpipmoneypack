@@ -864,7 +864,7 @@ function Transactions({transactions, categories, paymentMethods, onAdd, onEdit, 
   );
 }
 
-function CsvUpload({categories, onImport}){
+function CsvUpload({categories, paymentMethods, onImport}){
   const [rawFile,setRawFile]=useState(null);
   const [encoding,setEncoding]=useState('utf-8');
   const [skipRows,setSkipRows]=useState(0);
@@ -873,6 +873,8 @@ function CsvUpload({categories, onImport}){
   const [headers,setHeaders]=useState([]);
   const [mapping,setMapping]=useState({date:'',amount:'',desc:''});
   const [preview,setPreview]=useState([]);
+  const [batchWho,setBatchWho]=useState(WHO_OPTIONS[0]);
+  const [batchPM,setBatchPM]=useState((paymentMethods&&paymentMethods[0]?.id)||'cash');
   const fileRef = useRef(null);
 
   function parseWithSettings(file, enc, skip){
@@ -945,7 +947,8 @@ function CsvUpload({categories, onImport}){
         desc,
         categoryId: guessedCat,
         type: cat?cat.type:'personal',
-        who: WHO_OPTIONS[0],
+        who: batchWho,
+        paymentMethodId: batchPM,
         include: true,
       };
     }).filter(r=>r.amount>0);
@@ -959,7 +962,7 @@ function CsvUpload({categories, onImport}){
   function confirmImport(){
     const toImport = preview.filter(r=>r.include).map(r=>({
       id:'tx_'+Date.now()+Math.random().toString(36).slice(2,7),
-      date:r.date, amount:r.amount, categoryId:r.categoryId, type:r.type, who:r.who, memo:r.desc, source:'csv'
+      date:r.date, amount:r.amount, categoryId:r.categoryId, type:r.type, who:r.who, paymentMethodId:r.paymentMethodId, memo:r.desc, source:'csv'
     }));
     onImport(toImport);
     setRows(null); setPreview([]); setHeaders([]); setRawFile(null);
@@ -970,6 +973,25 @@ function CsvUpload({categories, onImport}){
     <div>
       <h1 className="page-title">CSV / 엑셀 업로드</h1>
       <p className="subtitle">은행/카드 CSV나 엑셀(xlsx)을 업로드하고 컬럼을 매핑하면, 이후엔 같은 형식을 자동 인식해요.</p>
+
+      <div className="card" style={{marginBottom:16}}>
+        <p className="stat-label" style={{marginBottom:10}}>이 파일은 누구/어떤 결제수단 내역인가요?</p>
+        <div className="row-2">
+          <div className="field" style={{marginBottom:0}}>
+            <label>입력자</label>
+            <select value={batchWho} onChange={e=>setBatchWho(e.target.value)}>
+              {WHO_OPTIONS.map(w=><option key={w} value={w}>{w}</option>)}
+            </select>
+          </div>
+          <div className="field" style={{marginBottom:0}}>
+            <label>결제수단</label>
+            <select value={batchPM} onChange={e=>setBatchPM(e.target.value)}>
+              {(paymentMethods||[]).map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          </div>
+        </div>
+        <p style={{fontSize:11.5,color:'var(--ink-soft)',marginTop:8}}>여기서 정한 값이 아래 미리보기의 각 행 기본값으로 들어가요. 필요하면 미리보기에서 행별로 다시 바꿀 수 있어요.</p>
+      </div>
 
       {!rows && (
         <div className="card" style={{textAlign:'center',padding:'44px 20px'}}>
@@ -1049,7 +1071,7 @@ function CsvUpload({categories, onImport}){
           <div style={{maxHeight:380,overflow:'auto'}}>
             <table className="csv-table">
               <thead>
-                <tr><th></th><th>날짜</th><th>내용</th><th style={{textAlign:'right'}}>금액</th><th>카테고리</th><th>구분</th><th>입력자</th></tr>
+                <tr><th></th><th>날짜</th><th>내용</th><th style={{textAlign:'right'}}>금액</th><th>카테고리</th><th>구분</th><th>입력자</th><th>결제수단</th></tr>
               </thead>
               <tbody>
                 {preview.map((r,i)=>(
@@ -1075,6 +1097,11 @@ function CsvUpload({categories, onImport}){
                     <td>
                       <select value={r.who} onChange={e=>updatePreviewRow(i,{who:e.target.value})}>
                         {WHO_OPTIONS.map(w=><option key={w} value={w}>{w}</option>)}
+                      </select>
+                    </td>
+                    <td>
+                      <select value={r.paymentMethodId} onChange={e=>updatePreviewRow(i,{paymentMethodId:e.target.value})}>
+                        {(paymentMethods||[]).map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
                       </select>
                     </td>
                   </tr>
@@ -1651,7 +1678,7 @@ function App(){
         {tab==='transactions' && <Transactions transactions={state.transactions} categories={state.categories} paymentMethods={state.paymentMethods} onAdd={addTx} onEdit={editTx} onDelete={deleteTx}/>}
         {tab==='loans' && <Loans loans={state.loans} onAdd={addLoan} onEdit={editLoan} onDelete={deleteLoan}/>}
         {tab==='paymentMethods' && <PaymentMethods paymentMethods={state.paymentMethods} onAdd={addPM} onEdit={editPM} onDelete={deletePM}/>}
-        {tab==='csv' && <CsvUpload categories={state.categories} onImport={importTx}/>}
+        {tab==='csv' && <CsvUpload categories={state.categories} paymentMethods={state.paymentMethods} onImport={importTx}/>}
         {tab==='categories' && <CategorySettings categories={state.categories} setCategories={setCategories}/>}
       </div>
     </div>
