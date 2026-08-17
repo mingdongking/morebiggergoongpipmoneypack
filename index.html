@@ -194,10 +194,22 @@ function saveLocal(state){
 
 // ---- Supabase row <-> 앱 내부 객체 매핑 ----
 function dbToTx(row){
-  return {id:row.id, date:row.date, amount:Number(row.amount), categoryId:row.category_id, type:row.type, who:row.who, memo:row.memo, source:row.source};
+  return {
+    id:row.id, date:row.date, amount:Number(row.amount), categoryId:row.category_id, type:row.type, who:row.who, memo:row.memo, source:row.source,
+    isInstallment: !!row.is_installment,
+    installmentPrincipal: row.installment_principal!=null ? Number(row.installment_principal) : null,
+    installmentTotalMonths: row.installment_total_months,
+    installmentCurrentMonth: row.installment_current_month,
+  };
 }
 function txToDb(t){
-  return {id:t.id, date:t.date, amount:t.amount, category_id:t.categoryId, type:t.type, who:t.who, memo:t.memo, source:t.source};
+  return {
+    id:t.id, date:t.date, amount:t.amount, category_id:t.categoryId, type:t.type, who:t.who, memo:t.memo, source:t.source,
+    is_installment: !!t.isInstallment,
+    installment_principal: t.isInstallment ? (t.installmentPrincipal||null) : null,
+    installment_total_months: t.isInstallment ? (t.installmentTotalMonths||null) : null,
+    installment_current_month: t.isInstallment ? (t.installmentCurrentMonth||null) : null,
+  };
 }
 function dbToCat(row){
   return {id:row.id, name:row.name, type:row.type, keywords:row.keywords||[]};
@@ -266,9 +278,16 @@ function Sidebar({tab,setTab}){
 }
 
 function AddTransactionModal({categories, onClose, onSave, initial}){
-  const [form,setForm]=useState(initial || {
-    date: todayISO(), amount:'', categoryId: categories[0]?.id||'', type:'', who:WHO_OPTIONS[0], memo:''
-  });
+  const defaults = {
+    date: todayISO(), amount:'', categoryId: categories[0]?.id||'', type:'', who:WHO_OPTIONS[0], memo:'',
+    isInstallment:false, installmentPrincipal:'', installmentTotalMonths:'', installmentCurrentMonth:''
+  };
+  const [form,setForm]=useState(initial ? {
+    ...defaults, ...initial,
+    installmentPrincipal: initial.installmentPrincipal ?? '',
+    installmentTotalMonths: initial.installmentTotalMonths ?? '',
+    installmentCurrentMonth: initial.installmentCurrentMonth ?? '',
+  } : defaults);
   const selectedCat = categories.find(c=>c.id===form.categoryId);
   const effectiveType = form.type || (selectedCat?selectedCat.type:'joint');
 
@@ -276,6 +295,7 @@ function AddTransactionModal({categories, onClose, onSave, initial}){
 
   function submit(){
     if(!form.amount || !form.date) return;
+    if(form.isInstallment && (!form.installmentTotalMonths || !form.installmentCurrentMonth)) return;
     onSave({
       id: initial?initial.id: 'tx_'+Date.now()+Math.random().toString(36).slice(2,7),
       date: form.date,
@@ -284,7 +304,11 @@ function AddTransactionModal({categories, onClose, onSave, initial}){
       type: effectiveType,
       who: form.who,
       memo: form.memo,
-      source: initial?initial.source:'manual'
+      source: initial?initial.source:'manual',
+      isInstallment: form.isInstallment,
+      installmentPrincipal: form.isInstallment ? Number(form.installmentPrincipal||0) : null,
+      installmentTotalMonths: form.isInstallment ? Number(form.installmentTotalMonths) : null,
+      installmentCurrentMonth: form.isInstallment ? Number(form.installmentCurrentMonth) : null,
     });
   }
 
@@ -325,6 +349,33 @@ function AddTransactionModal({categories, onClose, onSave, initial}){
           <label>메모</label>
           <input value={form.memo} onChange={e=>update('memo',e.target.value)} placeholder="선택 입력"/>
         </div>
+
+        <div className="field">
+          <label style={{display:'flex',alignItems:'center',gap:6,cursor:'pointer'}}>
+            <input type="checkbox" style={{width:'auto'}} checked={form.isInstallment} onChange={e=>update('isInstallment', e.target.checked)}/>
+            할부 결제예요
+          </label>
+        </div>
+
+        {form.isInstallment && (
+          <div style={{background:'var(--paper)',borderRadius:10,padding:'12px 14px',marginBottom:14}}>
+            <p style={{fontSize:11.5,color:'var(--ink-soft)',marginBottom:10}}>위 "금액"은 이번 달에 실제로 청구된 할부금이에요. 아래는 할부 전체 정보예요.</p>
+            <div className="field">
+              <label>원금 (할부 총 금액)</label>
+              <input type="number" placeholder="예: 600000" value={form.installmentPrincipal} onChange={e=>update('installmentPrincipal', e.target.value)}/>
+            </div>
+            <div className="row-2">
+              <div className="field">
+                <label>총 할부 개월</label>
+                <input type="number" min="1" placeholder="예: 12" value={form.installmentTotalMonths} onChange={e=>update('installmentTotalMonths', e.target.value)}/>
+              </div>
+              <div className="field">
+                <label>현재 몇 회차</label>
+                <input type="number" min="1" placeholder="예: 3" value={form.installmentCurrentMonth} onChange={e=>update('installmentCurrentMonth', e.target.value)}/>
+              </div>
+            </div>
+          </div>
+        )}
         <div style={{display:'flex',justifyContent:'flex-end',gap:8,marginTop:20}}>
           <button className="btn-ghost" onClick={onClose}>취소</button>
           <button className="btn-primary" onClick={submit}>저장</button>
@@ -488,7 +539,15 @@ function Transactions({transactions, categories, onAdd, onEdit, onDelete}){
                   <td data-label="카테고리">{catName(t.categoryId)}</td>
                   <td data-label="구분"><span className={"pill "+t.type}>{t.type==='joint'?'공동':'개인'}</span></td>
                   <td data-label="입력자">{t.who}</td>
-                  <td data-label="메모" style={{color:'var(--ink-soft)'}}>{t.memo||'—'}</td>
+                  <td data-label="메모" style={{color:'var(--ink-soft)'}}>
+                    {t.memo||'—'}
+                    {t.isInstallment && (
+                      <span className="pill" style={{background:'var(--gold-soft)',color:'#8a6d10',marginLeft:6}}>
+                        할부 {t.installmentCurrentMonth}/{t.installmentTotalMonths}회
+                        {t.installmentPrincipal ? ` · 원금 ${fmtWon(t.installmentPrincipal)}` : ''}
+                      </span>
+                    )}
+                  </td>
                   <td className="amount" data-label="금액">{fmtWon(t.amount)}</td>
                   <td data-label="관리" style={{whiteSpace:'nowrap'}}>
                     <button className="btn-icon" onClick={()=>{setEditing(t);setShowModal(true);}}>수정</button>
