@@ -402,6 +402,7 @@ function Sidebar({tab,setTab,mobileOpen,setMobileOpen}){
   const items=[
     {id:'dashboard',label:'대시보드'},
     {id:'transactions',label:'거래 내역'},
+    {id:'cashflow',label:'가용 자금'},
     {id:'recurring',label:'고정지출/할부 관리'},
     {id:'loans',label:'대출 관리'},
     {id:'assets',label:'저축/투자 관리'},
@@ -562,6 +563,300 @@ function AddTransactionModal({categories, paymentMethods, onClose, onSave, initi
           <button className="btn-ghost" onClick={onClose}>취소</button>
           <button className="btn-primary" onClick={submit}>저장</button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+/* ══════════════════ 가용 자금 ══════════════════ */
+function shiftMonthKey(mk, n){
+  const [y,m] = mk.split('-').map(Number);
+  const d = new Date(y, m-1+n, 1);
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+}
+function dayInMonthKey(mk, day){
+  const [y,m] = mk.split('-').map(Number);
+  const dim = new Date(y, m, 0).getDate();
+  return `${mk}-${String(Math.min(day, dim)).padStart(2,'0')}`;
+}
+function addDaysISO(iso, n){
+  const d = new Date(iso+'T00:00:00');
+  d.setDate(d.getDate()+n);
+  return d.toISOString().slice(0,10);
+}
+const CASH_ACCOUNT = '현금·기타';
+
+/* 급여일 기준 사이클: 이번 급여일 ~ 다음 급여일(포함) */
+function payCycle(payDay, base){
+  const d = base ? new Date(base+'T00:00:00') : new Date();
+  let y = d.getFullYear(), m = d.getMonth();
+  if(d.getDate() < payDay){ m -= 1; if(m<0){ m=11; y-=1; } }
+  const startKey = `${y}-${String(m+1).padStart(2,'0')}`;
+  const from = dayInMonthKey(startKey, payDay);
+  const to   = dayInMonthKey(shiftMonthKey(startKey,1), payDay);
+  return {from, to};
+}
+
+function CashFlow({transactions, paymentMethods, recurringExpenses, loans, assets, onAddAsset, onEditAsset}){
+  const [payDay,setPayDay] = useState(()=>Number(localStorage.getItem('cf_payday'))||21);
+  const [income,setIncome] = useState(()=>localStorage.getItem('cf_income')||'');
+  const [customFrom,setCustomFrom] = useState('');
+  const [customTo,setCustomTo] = useState('');
+  const today = todayISO();
+
+  useEffect(()=>{ localStorage.setItem('cf_payday', String(payDay)); },[payDay]);
+  useEffect(()=>{ localStorage.setItem('cf_income', income); },[income]);
+
+  const auto = payCycle(payDay);
+  const from = customFrom || auto.from;
+  const to   = customTo   || auto.to;
+
+  const pmMap = {};
+  (paymentMethods||[]).forEach(p=>{ pmMap[p.id]=p; });
+  const accountOf = pm => (pm && pm.type!=='cash' && pm.linkedAccount) ? pm.linkedAccount.trim() : CASH_ACCOUNT;
+
+  /* 계좌 목록 = 결제수단에 등록된 출금계좌 */
+  const accounts = useMemo(()=>{
+    const set = new Set();
+    (paymentMethods||[]).forEach(p=>{ if(p.linkedAccount && p.linkedAccount.trim()) set.add(p.linkedAccount.trim()); });
+    return [...set].sort();
+  },[paymentMethods]);
+
+  /* 잔액 = 저축/투자 관리의 '현금성자산' 중 이름이 계좌명과 같은 항목 */
+  const cashAssets = (assets||[]).filter(a=>a.assetType==='cash');
+  const balOf = name => cashAssets.find(a=>a.name.trim()===name);
+  const startBal = {};
+  accounts.forEach(a=>{ startBal[a] = balOf(a)?.currentValue ?? null; });
+
+  /* 출금계좌가 비어 있는 카드 */
+  const unlinked = (paymentMethods||[]).filter(p=>p.type!=='cash' && !(p.linkedAccount||'').trim());
+
+  /* ── 예정 출금 모으기 ── */
+  const events = useMemo(()=>{
+    const ev = [];
+
+    /* 1) 카드 결제 예정액 — 거래내역을 카드별·결제월로 묶음 */
+    const bucket = new Map();
+    (transactions||[]).forEach(t=>{
+      if(t.flow==='income') return;
+      const pm = pmMap[t.paymentMethodId];
+      if(!pm || pm.type==='cash' || !pm.paymentDay) return;      // 현금 지출은 이미 잔액에 반영됨
+      const bk = getBillingMonthKey(t.date, pm);
+      const payDate = dayInMonthKey(bk, pm.paymentDay);
+      if(payDate < today || payDate < from || payDate > to) return;
+      const key = pm.id+'|'+payDate;
+      if(!bucket.has(key)) bucket.set(key,{date:payDate, account:accountOf(pm), label:pm.name, amount:0, kind:'card'});
+      bucket.get(key).amount += t.amount;
+    });
+    bucket.forEach(v=>ev.push(v));
+
+    /* 2) 고정지출·할부 중 아직 납부하지 않은 건 */
+    (recurringExpenses||[]).forEach(r=>{
+      if(r.active===false) return;
+      if(r.kind==='installment' && r.totalMonths && (r.paidCount||0)>=r.totalMonths) return;
+      const pm = pmMap[r.paymentMethodId];
+      [0,1].forEach(off=>{
+        const mk = shiftMonthKey(monthKey(from), off);
+        if((r.lastPaidMonth||'') >= mk) return;                   // 이미 납부 → 거래내역에 잡힘
+        const charge = dayInMonthKey(mk, 1);
+        let payDate;
+        if(pm && pm.type!=='cash' && pm.paymentDay) payDate = dayInMonthKey(getBillingMonthKey(charge,pm), pm.paymentDay);
+        else payDate = charge;
+        if(payDate < today || payDate < from || payDate > to) return;
+        ev.push({date:payDate, account:accountOf(pm), label:r.name+(r.kind==='installment'?` (할부 ${(r.paidCount||0)+1}/${r.totalMonths})`:''),
+                 amount:r.amount, kind:'recurring'});
+      });
+    });
+
+    /* 3) 대출 상환 — 최근 상환일의 '일'을 반복으로 가정 */
+    (loans||[]).forEach(l=>{
+      if(!l.monthlyPayment) return;
+      if(l.totalInstallments && l.currentInstallment>=l.totalInstallments) return;
+      const day = l.lastPaymentDate ? Number(l.lastPaymentDate.slice(8,10)) : 25;
+      [0,1].forEach(off=>{
+        const mk = shiftMonthKey(monthKey(from), off);
+        if((l.lastPaymentDate||'').slice(0,7) >= mk) return;
+        const d = dayInMonthKey(mk, day);
+        if(d < today || d < from || d > to) return;
+        ev.push({date:d, account:CASH_ACCOUNT, label:l.name+' 상환', amount:l.monthlyPayment, kind:'loan'});
+      });
+    });
+
+    return ev.sort((a,b)=> a.date<b.date?-1 : a.date>b.date?1 : b.amount-a.amount);
+  },[transactions,paymentMethods,recurringExpenses,loans,from,to,today]);
+
+  const totalOut = events.reduce((s,e)=>s+e.amount,0);
+  const knownBal = accounts.filter(a=>startBal[a]!=null).reduce((s,a)=>s+startBal[a],0);
+  const missing  = accounts.filter(a=>startBal[a]==null);
+  const expectedIncome = Number(income)||0;
+  const available = knownBal + expectedIncome - totalOut;
+
+  /* 계좌별 잔액 추이 — 날짜순으로 차감 */
+  const running = {};
+  accounts.forEach(a=>{ running[a] = startBal[a] ?? 0; });
+  running[CASH_ACCOUNT] = running[CASH_ACCOUNT] ?? 0;
+  const timeline = [];
+  const byDate = new Map();
+  events.forEach(e=>{
+    if(!byDate.has(e.date)) byDate.set(e.date,[]);
+    byDate.get(e.date).push(e);
+  });
+  [...byDate.keys()].sort().forEach(date=>{
+    const list = byDate.get(date);
+    const rows = list.map(e=>{
+      running[e.account] = (running[e.account]??0) - e.amount;
+      return {...e, after: running[e.account]};
+    });
+    timeline.push({date, rows, short: rows.some(r=>r.after<0)});
+  });
+
+  const risky = timeline.filter(d=>d.short);
+
+  return (
+    <div>
+      <h1 className="page-title">가용 자금</h1>
+      <p className="subtitle">{from} ~ {to} · 통장 잔액에서 앞으로 빠져나갈 돈을 뺀 실제 여윳돈</p>
+
+      {/* ── 설정 ── */}
+      <div className="card" style={{marginBottom:18}}>
+        <div style={{display:'flex',gap:16,flexWrap:'wrap',alignItems:'flex-end'}}>
+          <div style={{width:110}}>
+            <label>급여일</label>
+            <input type="number" min="1" max="31" value={payDay} onChange={e=>setPayDay(Number(e.target.value)||21)}/>
+          </div>
+          <div style={{width:190}}>
+            <label>사이클 내 예상 수입</label>
+            <input type="number" placeholder="예: 급여 합계" value={income} onChange={e=>setIncome(e.target.value)}/>
+          </div>
+          <div style={{width:160}}>
+            <label>시작일 (직접 지정)</label>
+            <input type="date" value={customFrom} onChange={e=>setCustomFrom(e.target.value)}/>
+          </div>
+          <div style={{width:160}}>
+            <label>종료일</label>
+            <input type="date" value={customTo} onChange={e=>setCustomTo(e.target.value)}/>
+          </div>
+          {(customFrom||customTo) &&
+            <button className="btn-ghost" onClick={()=>{setCustomFrom('');setCustomTo('');}}>급여 사이클로</button>}
+        </div>
+      </div>
+
+      {/* ── 요약 ── */}
+      <div className="grid-3" style={{marginBottom:18}}>
+        <div className="card">
+          <p className="stat-label">현재 통장 잔액</p>
+          <p className="stat-value">{fmtWon(knownBal)}</p>
+          <p style={{fontSize:12,color:'var(--ink-soft)',margin:'8px 0 0'}}>
+            {missing.length ? `${missing.length}개 계좌 잔액 미등록` : `${accounts.length}개 계좌`}</p>
+        </div>
+        <div className="card">
+          <p className="stat-label">앞으로 빠져나갈 돈</p>
+          <p className="stat-value" style={{color:'var(--danger)'}}>-{fmtWon(totalOut).replace('-','')}</p>
+          <p style={{fontSize:12,color:'var(--ink-soft)',margin:'8px 0 0'}}>{events.length}건 예정</p>
+        </div>
+        <div className="card" style={{background: available<0 ? 'rgba(181,73,59,.12)' : 'var(--paper-raised)'}}>
+          <p className="stat-label">가용 자금</p>
+          <p className="stat-value" style={{color: available<0?'var(--danger)':'var(--joint)'}}>{fmtWon(available)}</p>
+          <p style={{fontSize:12,color:'var(--ink-soft)',margin:'8px 0 0'}}>
+            {expectedIncome ? `예상 수입 ${fmtWon(expectedIncome)} 포함` : '이 기간 생활비로 쓸 수 있는 돈'}</p>
+        </div>
+      </div>
+
+      {/* ── 설정 누락 안내 ── */}
+      {(missing.length>0 || unlinked.length>0) &&
+        <div className="card" style={{marginBottom:18, borderColor:'rgba(201,162,39,.5)'}}>
+          <h3 style={{margin:'0 0 10px',fontSize:15}}>정확한 계산을 위해 채워야 할 것</h3>
+          {unlinked.length>0 &&
+            <p style={{fontSize:13.5,color:'var(--ink-soft)',margin:'0 0 8px'}}>
+              <b style={{color:'var(--ink)'}}>출금계좌 미등록</b> — {unlinked.map(p=>p.name).join(', ')} · 결제수단 관리에서 지정해 주세요.
+            </p>}
+          {missing.length>0 &&
+            <div style={{fontSize:13.5,color:'var(--ink-soft)'}}>
+              <b style={{color:'var(--ink)'}}>잔액 미등록</b> — 아래 계좌를 저축/투자 관리에 현금성자산으로 등록하면 자동으로 연결됩니다.
+              <div style={{marginTop:8,display:'flex',gap:8,flexWrap:'wrap'}}>
+                {missing.map(a=>(
+                  <button key={a} className="btn-ghost" onClick={()=>{
+                    const v = prompt(`${a}\n현재 잔액을 입력하세요 (원)`);
+                    if(v==null) return;
+                    const n = Number(String(v).replace(/[,\s원]/g,''));
+                    if(!Number.isFinite(n)) return;
+                    onAddAsset({id:'as_'+Date.now()+Math.random().toString(36).slice(2,6), name:a, assetType:'cash',
+                      currentValue:n, principalInvested:null, asOfDate:today, scope:'joint', memo:'입출금 통장'});
+                  }}>{a} 잔액 등록</button>))}
+              </div>
+            </div>}
+        </div>}
+
+      {/* ── 계좌별 ── */}
+      <div className="card" style={{marginBottom:18}}>
+        <h3 style={{margin:'0 0 4px',fontSize:15}}>계좌별 현황</h3>
+        <p style={{fontSize:12.5,color:'var(--ink-soft)',margin:'0 0 6px'}}>
+          합계로는 여유가 있어도 특정 계좌만 모자랄 수 있습니다. 부족하면 다른 계좌에서 미리 옮겨두세요.
+        </p>
+        <table>
+          <thead><tr>
+            <th>계좌</th><th className="amount">현재 잔액</th><th className="amount">예정 출금</th>
+            <th className="amount">사이클 말 잔액</th><th>상태</th>
+          </tr></thead>
+          <tbody>
+            {[...accounts, CASH_ACCOUNT].map(a=>{
+              const out = events.filter(e=>e.account===a).reduce((s,e)=>s+e.amount,0);
+              if(a===CASH_ACCOUNT && out===0) return null;
+              const bal = startBal[a] ?? (a===CASH_ACCOUNT ? 0 : null);
+              const end = (bal??0) - out;
+              return (
+                <tr key={a}>
+                  <td>{a}</td>
+                  <td className="amount">{bal==null ? '–' : fmtWon(bal)}</td>
+                  <td className="amount" style={{color: out?'var(--danger)':'inherit'}}>{out?fmtWon(-out):'–'}</td>
+                  <td className="amount" style={{fontWeight:600}}>{bal==null?'–':fmtWon(end)}</td>
+                  <td>{bal==null
+                    ? <span className="pill" style={{background:'var(--gold-soft)',color:'#8a6d10'}}>잔액 미등록</span>
+                    : end<0
+                      ? <span className="pill" style={{background:'rgba(181,73,59,.14)',color:'var(--danger)'}}>부족</span>
+                      : <span className="pill joint">여유</span>}</td>
+                </tr>);
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {/* ── 경고 ── */}
+      {risky.length>0 &&
+        <div className="card" style={{marginBottom:18, background:'rgba(181,73,59,.10)', borderColor:'rgba(181,73,59,.4)'}}>
+          <h3 style={{margin:'0 0 8px',fontSize:15,color:'var(--danger)'}}>잔액이 모자라는 날</h3>
+          {risky.map(d=>(
+            <p key={d.date} style={{fontSize:13.5,margin:'0 0 6px'}}>
+              <b>{d.date}</b> — {d.rows.filter(r=>r.after<0).map(r=>`${r.account} ${fmtWon(r.after)}`).join(' · ')}
+            </p>))}
+          <p style={{fontSize:12.5,color:'var(--ink-soft)',margin:'8px 0 0'}}>
+            결제일 전날까지 다른 계좌에서 옮겨두면 연체를 막을 수 있습니다.
+          </p>
+        </div>}
+
+      {/* ── 타임라인 ── */}
+      <div className="card">
+        <h3 style={{margin:'0 0 4px',fontSize:15}}>출금 타임라인</h3>
+        <p style={{fontSize:12.5,color:'var(--ink-soft)',margin:'0 0 6px'}}>오늘 이후 예정된 출금만 표시합니다.</p>
+        {!timeline.length
+          ? <div className="empty"><div className="display">예정된 출금이 없습니다</div>
+              <div style={{fontSize:13}}>거래내역·고정지출·대출에 데이터가 있는지 확인해 주세요.</div></div>
+          : <table>
+              <thead><tr>
+                <th style={{width:104}}>날짜</th><th>항목</th><th>계좌</th>
+                <th className="amount">금액</th><th className="amount">출금 후 잔액</th>
+              </tr></thead>
+              <tbody>
+                {timeline.map(d=> d.rows.map((r,i)=>(
+                  <tr key={d.date+i} style={r.after<0?{background:'rgba(181,73,59,.07)'}:null}>
+                    <td style={{color:i?'transparent':'inherit'}}>{d.date}</td>
+                    <td>{r.label}</td>
+                    <td style={{fontSize:12.5,color:'var(--ink-soft)'}}>{r.account}</td>
+                    <td className="amount" style={{color:'var(--danger)'}}>{fmtWon(-r.amount)}</td>
+                    <td className="amount" style={{fontWeight:600,color:r.after<0?'var(--danger)':'inherit'}}>{fmtWon(r.after)}</td>
+                  </tr>)))}
+              </tbody>
+            </table>}
       </div>
     </div>
   );
@@ -2494,6 +2789,7 @@ function App(){
       <div className="main">
         <SyncBadge status={syncStatus}/>
         {tab==='dashboard' && <Dashboard transactions={state.transactions} categories={state.categories} loans={state.loans} paymentMethods={state.paymentMethods} assets={state.assets} recurringExpenses={state.recurringExpenses}/>}
+        {tab==='cashflow' && <CashFlow transactions={state.transactions} paymentMethods={state.paymentMethods} recurringExpenses={state.recurringExpenses} loans={state.loans} assets={state.assets} onAddAsset={addAsset} onEditAsset={editAsset}/>}
         {tab==='transactions' && <Transactions transactions={state.transactions} categories={state.categories} paymentMethods={state.paymentMethods} onAdd={addTx} onEdit={editTx} onDelete={deleteTx}/>}
         {tab==='recurring' && <RecurringExpenses recurringExpenses={state.recurringExpenses} categories={state.categories} paymentMethods={state.paymentMethods} transactions={state.transactions} onAdd={addRecurring} onEdit={editRecurring} onDelete={deleteRecurring} onPay={payRecurring} onMigrate={migrateInstallments}/>}
         {tab==='loans' && <Loans loans={state.loans} onAdd={addLoan} onEdit={editLoan} onDelete={deleteLoan}/>}
