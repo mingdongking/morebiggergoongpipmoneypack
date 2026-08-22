@@ -248,6 +248,7 @@ function dbToPM(row){
     id:row.id, name:row.name, type:row.type,
     closingDay: row.closing_day, paymentDay: row.payment_day,
     paymentOffsetMonths: row.payment_offset_months!=null ? row.payment_offset_months : 1,
+    withdrawalDay: row.withdrawal_day!=null ? row.withdrawal_day : null,
     linkedAccount: row.linked_account,
     color: row.color, memo: row.memo,
   };
@@ -257,6 +258,7 @@ function pmToDb(p){
     id:p.id, name:p.name, type:p.type,
     closing_day: p.closingDay||null, payment_day: p.paymentDay||null,
     payment_offset_months: p.paymentOffsetMonths!=null ? p.paymentOffsetMonths : 1,
+    withdrawal_day: p.type==='transfer' && p.withdrawalDay ? p.withdrawalDay : null,
     linked_account: p.linkedAccount||null,
     color: p.color||null, memo: p.memo||null,
   };
@@ -265,7 +267,7 @@ function daysInMonth(year, monthIdx){ return new Date(year, monthIdx+1, 0).getDa
 
 // 카드의 이용마감일/결제일 기준으로 거래일이 실제 "출금되는 달(YYYY-MM)"을 계산
 function getBillingMonthKey(dateStr, pm){
-  if(!pm || pm.type==='cash' || !pm.closingDay || !pm.paymentDay) return monthKey(dateStr);
+  if(!pm || pm.type!=='card' || !pm.closingDay || !pm.paymentDay) return monthKey(dateStr);
   const d = new Date(dateStr+'T00:00:00');
   const day = d.getDate();
   let cMonth = d.getMonth(), cYear = d.getFullYear();
@@ -286,6 +288,7 @@ function dbToLoan(row){
     currentInstallment: row.current_installment,
     totalInstallments: row.total_installments,
     lastPaymentDate: row.last_payment_date,
+    paymentMethodId: row.payment_method_id || null,
     type: row.type, memo: row.memo,
   };
 }
@@ -299,6 +302,7 @@ function loanToDb(l){
     current_installment: l.currentInstallment||null,
     total_installments: l.totalInstallments||null,
     last_payment_date: l.lastPaymentDate||null,
+    payment_method_id: l.paymentMethodId||null,
     type: l.type||'joint', memo: l.memo||null,
     updated_at: new Date().toISOString(),
   };
@@ -584,7 +588,7 @@ function addDaysISO(iso, n){
   d.setDate(d.getDate()+n);
   return d.toISOString().slice(0,10);
 }
-const CASH_ACCOUNT = '현금·기타';
+const NO_ACCOUNT = '계좌 미지정';
 
 /* 급여일 기준 사이클: 이번 급여일 ~ 다음 급여일(포함) */
 function payCycle(payDay, base){
@@ -613,7 +617,8 @@ function CashFlow({transactions, paymentMethods, recurringExpenses, loans, asset
 
   const pmMap = {};
   (paymentMethods||[]).forEach(p=>{ pmMap[p.id]=p; });
-  const accountOf = pm => (pm && pm.type!=='cash' && pm.linkedAccount) ? pm.linkedAccount.trim() : CASH_ACCOUNT;
+  const accountOf = pm => (pm && pm.type!=='cash' && (pm.linkedAccount||'').trim())
+    ? pm.linkedAccount.trim() : NO_ACCOUNT;
 
   /* 계좌 목록 = 결제수단에 등록된 출금계좌 */
   const accounts = useMemo(()=>{
@@ -640,12 +645,18 @@ function CashFlow({transactions, paymentMethods, recurringExpenses, loans, asset
     (transactions||[]).forEach(t=>{
       if(t.flow==='income') return;
       const pm = pmMap[t.paymentMethodId];
-      if(!pm || pm.type==='cash' || !pm.paymentDay) return;      // 현금 지출은 이미 잔액에 반영됨
-      const bk = getBillingMonthKey(t.date, pm);
-      const payDate = dayInMonthKey(bk, pm.paymentDay);
+      if(!pm || pm.type==='cash') return;                        // 현금 지출은 이미 잔액에 반영됨
+      let payDate;
+      if(pm.type==='card'){
+        if(!pm.paymentDay) return;
+        payDate = dayInMonthKey(getBillingMonthKey(t.date, pm), pm.paymentDay);
+      } else {
+        payDate = t.date;                                        // 계좌이체 = 거래일 당일 출금
+      }
       if(payDate < today || payDate < from || payDate > to) return;
       const key = pm.id+'|'+payDate;
-      if(!bucket.has(key)) bucket.set(key,{date:payDate, account:accountOf(pm), label:pm.name, amount:0, kind:'card'});
+      if(!bucket.has(key)) bucket.set(key,{date:payDate, account:accountOf(pm), label:pm.name, amount:0,
+                                           kind: pm.type==='card'?'card':'transfer'});
       bucket.get(key).amount += t.amount;
     });
     bucket.forEach(v=>ev.push(v));
@@ -658,10 +669,12 @@ function CashFlow({transactions, paymentMethods, recurringExpenses, loans, asset
       [0,1].forEach(off=>{
         const mk = shiftMonthKey(monthKey(from), off);
         if((r.lastPaidMonth||'') >= mk) return;                   // 이미 납부 → 거래내역에 잡힘
-        const charge = dayInMonthKey(mk, 1);
         let payDate;
-        if(pm && pm.type!=='cash' && pm.paymentDay) payDate = dayInMonthKey(getBillingMonthKey(charge,pm), pm.paymentDay);
-        else payDate = charge;
+        if(pm && pm.type==='card' && pm.paymentDay)
+          payDate = dayInMonthKey(getBillingMonthKey(dayInMonthKey(mk,1), pm), pm.paymentDay);
+        else if(pm && pm.type==='transfer')
+          payDate = dayInMonthKey(mk, pm.withdrawalDay || 25);
+        else payDate = dayInMonthKey(mk, 1);
         if(payDate < today || payDate < from || payDate > to) return;
         ev.push({date:payDate, account:accountOf(pm), label:r.name+(r.kind==='installment'?` (할부 ${(r.paidCount||0)+1}/${r.totalMonths})`:''),
                  amount:r.amount, kind:'recurring'});
@@ -672,13 +685,15 @@ function CashFlow({transactions, paymentMethods, recurringExpenses, loans, asset
     (loans||[]).forEach(l=>{
       if(!l.monthlyPayment) return;
       if(l.totalInstallments && l.currentInstallment>=l.totalInstallments) return;
-      const day = l.lastPaymentDate ? Number(l.lastPaymentDate.slice(8,10)) : 25;
+      const lpm = pmMap[l.paymentMethodId];
+      const day = (lpm && lpm.type==='transfer' && lpm.withdrawalDay) ? lpm.withdrawalDay
+                : l.lastPaymentDate ? Number(l.lastPaymentDate.slice(8,10)) : 25;
       [0,1].forEach(off=>{
         const mk = shiftMonthKey(monthKey(from), off);
         if((l.lastPaymentDate||'').slice(0,7) >= mk) return;
         const d = dayInMonthKey(mk, day);
         if(d < today || d < from || d > to) return;
-        ev.push({date:d, account:CASH_ACCOUNT, label:l.name+' 상환', amount:l.monthlyPayment, kind:'loan'});
+        ev.push({date:d, account:accountOf(lpm), label:l.name+' 상환', amount:l.monthlyPayment, kind:'loan'});
       });
     });
 
@@ -694,7 +709,7 @@ function CashFlow({transactions, paymentMethods, recurringExpenses, loans, asset
   /* 계좌별 잔액 추이 — 날짜순으로 차감 */
   const running = {};
   accounts.forEach(a=>{ running[a] = startBal[a] ?? 0; });
-  running[CASH_ACCOUNT] = running[CASH_ACCOUNT] ?? 0;
+  running[NO_ACCOUNT] = running[NO_ACCOUNT] ?? 0;
   const timeline = [];
   const byDate = new Map();
   events.forEach(e=>{
@@ -711,6 +726,23 @@ function CashFlow({transactions, paymentMethods, recurringExpenses, loans, asset
   });
 
   const risky = timeline.filter(d=>d.short);
+
+  /* 계좌별로 잔액이 가장 낮아지는 지점을 찾아 '미리 옮겨둬야 할 금액'을 계산 */
+  const shortfalls = (()=>{
+    const track = {}, low = {}, when = {};
+    [...accounts, NO_ACCOUNT].forEach(a=>{ track[a] = startBal[a] ?? 0; low[a] = track[a]; when[a] = null; });
+    timeline.forEach(d=> d.rows.forEach(r=>{
+      track[r.account] = (track[r.account]??0) - r.amount;
+      if(track[r.account] < (low[r.account]??0)){ low[r.account] = track[r.account]; }
+      if(track[r.account] < 0 && !when[r.account]) when[r.account] = d.date;
+    }));
+    return accounts.concat(NO_ACCOUNT)
+      .filter(a=> (low[a]??0) < 0 && events.some(e=>e.account===a))
+      .map(a=>({account:a, need: Math.ceil(-low[a]/10000)*10000, by: when[a]}));
+  })();
+  const surplus = accounts.filter(a=>startBal[a]!=null)
+    .map(a=>({account:a, left:(startBal[a]||0) - events.filter(e=>e.account===a).reduce((s,e)=>s+e.amount,0)}))
+    .filter(o=>o.left>0).sort((x,y)=>y.left-x.left);
 
   return (
     <div>
@@ -799,10 +831,10 @@ function CashFlow({transactions, paymentMethods, recurringExpenses, loans, asset
             <th className="amount">사이클 말 잔액</th><th>상태</th>
           </tr></thead>
           <tbody>
-            {[...accounts, CASH_ACCOUNT].map(a=>{
+            {[...accounts, NO_ACCOUNT].map(a=>{
               const out = events.filter(e=>e.account===a).reduce((s,e)=>s+e.amount,0);
-              if(a===CASH_ACCOUNT && out===0) return null;
-              const bal = startBal[a] ?? (a===CASH_ACCOUNT ? 0 : null);
+              if(a===NO_ACCOUNT && out===0) return null;
+              const bal = startBal[a] ?? (a===NO_ACCOUNT ? 0 : null);
               const end = (bal??0) - out;
               return (
                 <tr key={a}>
@@ -822,16 +854,25 @@ function CashFlow({transactions, paymentMethods, recurringExpenses, loans, asset
       </div>
 
       {/* ── 경고 ── */}
-      {risky.length>0 &&
+      {shortfalls.length>0 &&
         <div className="card" style={{marginBottom:18, background:'rgba(181,73,59,.10)', borderColor:'rgba(181,73,59,.4)'}}>
-          <h3 style={{margin:'0 0 8px',fontSize:15,color:'var(--danger)'}}>잔액이 모자라는 날</h3>
-          {risky.map(d=>(
-            <p key={d.date} style={{fontSize:13.5,margin:'0 0 6px'}}>
-              <b>{d.date}</b> — {d.rows.filter(r=>r.after<0).map(r=>`${r.account} ${fmtWon(r.after)}`).join(' · ')}
-            </p>))}
-          <p style={{fontSize:12.5,color:'var(--ink-soft)',margin:'8px 0 0'}}>
-            결제일 전날까지 다른 계좌에서 옮겨두면 연체를 막을 수 있습니다.
+          <h3 style={{margin:'0 0 4px',fontSize:15,color:'var(--danger)'}}>미리 옮겨둬야 할 돈</h3>
+          <p style={{fontSize:12.5,color:'var(--ink-soft)',margin:'0 0 12px'}}>
+            아래 계좌는 출금일에 잔액이 모자랍니다. 하루 전까지 채워두면 연체를 막을 수 있어요.
           </p>
+          {shortfalls.map(sf=>(
+            <div key={sf.account} style={{display:'flex',flexWrap:'wrap',gap:10,alignItems:'baseline',
+                 padding:'10px 0',borderTop:'1px solid var(--line)'}}>
+              <b style={{fontSize:14}}>{sf.account}</b>
+              <span style={{fontSize:13.5,color:'var(--danger)',fontWeight:600}}>{fmtWon(sf.need)} 부족</span>
+              <span style={{fontSize:12.5,color:'var(--ink-soft)'}}>
+                {sf.by} 까지 {surplus.length ? `· ${surplus[0].account} 에서 옮기기` : ''}
+              </span>
+            </div>))}
+          {!!surplus.length &&
+            <p style={{fontSize:12.5,color:'var(--ink-soft)',margin:'12px 0 0'}}>
+              여유 있는 계좌 — {surplus.slice(0,3).map(o=>`${o.account} ${fmtWon(o.left)}`).join(' · ')}
+            </p>}
         </div>}
 
       {/* ── 타임라인 ── */}
@@ -1651,11 +1692,11 @@ function CsvUpload({categories, paymentMethods, onImport}){
   );
 }
 
-function LoanModal({onClose, onSave, initial}){
+function LoanModal({onClose, onSave, initial, paymentMethods}){
   const [form,setForm]=useState(initial ? {...initial} : {
     name:'', originalPrincipal:'', remainingPrincipal:'', monthlyPayment:'', interestRate:'',
     currentInstallment:'', totalInstallments:'', lastPaymentDate:'',
-    type:'joint', memo:''
+    paymentMethodId:'', type:'joint', memo:''
   });
   function update(k,v){ setForm(f=>({...f,[k]:v})); }
   function submit(){
@@ -1670,6 +1711,7 @@ function LoanModal({onClose, onSave, initial}){
       currentInstallment: form.currentInstallment ? Number(form.currentInstallment) : null,
       totalInstallments: form.totalInstallments ? Number(form.totalInstallments) : null,
       lastPaymentDate: form.lastPaymentDate || null,
+      paymentMethodId: form.paymentMethodId || null,
       type: form.type,
       memo: form.memo,
     });
@@ -1718,6 +1760,15 @@ function LoanModal({onClose, onSave, initial}){
           <input type="date" value={form.lastPaymentDate||''} onChange={e=>update('lastPaymentDate',e.target.value)}/>
         </div>
         <div className="field">
+          <label>출금 결제수단 (선택)</label>
+          <select value={form.paymentMethodId||''} onChange={e=>update('paymentMethodId',e.target.value)}>
+            <option value="">지정 안 함</option>
+            {(paymentMethods||[]).filter(p=>p.type!=='cash').map(p=>(
+              <option key={p.id} value={p.id}>{p.name}{p.linkedAccount?` · ${p.linkedAccount}`:''}</option>))}
+          </select>
+          <p style={{fontSize:11.5,color:'var(--ink-soft)',marginTop:6}}>어느 통장에서 빠지는지 지정하면 가용 자금 계산에 반영됩니다.</p>
+        </div>
+        <div className="field">
           <label>공동 / 개인</label>
           <div className="toggle-row">
             <button type="button" className={"toggle-btn"+(form.type==='joint'?' active-joint':'')} onClick={()=>update('type','joint')}>공동</button>
@@ -1737,7 +1788,7 @@ function LoanModal({onClose, onSave, initial}){
   );
 }
 
-function Loans({loans, onAdd, onEdit, onDelete}){
+function Loans({loans, onAdd, onEdit, onDelete, paymentMethods}){
   const [showModal,setShowModal]=useState(false);
   const [editing,setEditing]=useState(null);
 
@@ -1828,6 +1879,7 @@ function Loans({loans, onAdd, onEdit, onDelete}){
       {showModal && (
         <LoanModal
           initial={editing}
+          paymentMethods={paymentMethods}
           onClose={()=>setShowModal(false)}
           onSave={(l)=>{ editing?onEdit(l):onAdd(l); setShowModal(false); }}
         />
@@ -1838,7 +1890,7 @@ function Loans({loans, onAdd, onEdit, onDelete}){
 
 function PaymentMethodModal({onClose, onSave, initial}){
   const [form,setForm]=useState(initial ? {...initial} : {
-    name:'', type:'card', closingDay:'', paymentDay:'', paymentOffsetMonths:1, linkedAccount:'', memo:''
+    name:'', type:'card', closingDay:'', paymentDay:'', paymentOffsetMonths:1, withdrawalDay:'', linkedAccount:'', memo:''
   });
   function update(k,v){ setForm(f=>({...f,[k]:v})); }
   function submit(){
@@ -1849,7 +1901,8 @@ function PaymentMethodModal({onClose, onSave, initial}){
       closingDay: form.type==='card' && form.closingDay ? Number(form.closingDay) : null,
       paymentDay: form.type==='card' && form.paymentDay ? Number(form.paymentDay) : null,
       paymentOffsetMonths: form.type==='card' ? Number(form.paymentOffsetMonths) : null,
-      linkedAccount: form.linkedAccount,
+      withdrawalDay: form.type==='transfer' && form.withdrawalDay ? Number(form.withdrawalDay) : null,
+      linkedAccount: form.type==='cash' ? '' : form.linkedAccount,
       memo: form.memo,
     });
   }
@@ -1865,9 +1918,28 @@ function PaymentMethodModal({onClose, onSave, initial}){
           <label>유형</label>
           <div className="toggle-row">
             <button type="button" className={"toggle-btn"+(form.type==='card'?' active-joint':'')} onClick={()=>update('type','card')}>카드</button>
+            <button type="button" className={"toggle-btn"+(form.type==='transfer'?' active-joint':'')} onClick={()=>update('type','transfer')}>계좌이체</button>
             <button type="button" className={"toggle-btn"+(form.type==='cash'?' active-personal':'')} onClick={()=>update('type','cash')}>현금</button>
           </div>
+          <p style={{fontSize:11.5,color:'var(--ink-soft)',marginTop:8}}>
+            {form.type==='card' && '이용마감일에 모아서 결제일에 한 번에 빠지는 신용카드입니다.'}
+            {form.type==='transfer' && '자동이체·체크카드처럼 통장에서 바로 빠지는 결제수단입니다. 관리비, 통신비, 대출 상환 등에 쓰세요.'}
+            {form.type==='cash' && '지갑에서 나가는 실물 현금입니다. 출금계좌가 없어 가용 자금 계산에서 제외됩니다.'}
+          </p>
         </div>
+        {form.type==='transfer' && (
+          <React.Fragment>
+            <div className="field">
+              <label>출금계좌</label>
+              <input value={form.linkedAccount} onChange={e=>update('linkedAccount',e.target.value)} placeholder="예: 국민은행 04000204221014"/>
+            </div>
+            <div className="field">
+              <label>정기 출금일 (선택, 매월 며칠)</label>
+              <input type="number" min="1" max="31" placeholder="예: 25" value={form.withdrawalDay||''} onChange={e=>update('withdrawalDay',e.target.value)}/>
+              <p style={{fontSize:11.5,color:'var(--ink-soft)',marginTop:6}}>고정지출·대출처럼 매달 같은 날 빠지는 경우에만 입력하세요.</p>
+            </div>
+          </React.Fragment>
+        )}
         {form.type==='card' && (
           <React.Fragment>
             <div className="row-2">
@@ -1927,11 +1999,14 @@ function PaymentMethods({paymentMethods, onAdd, onEdit, onDelete}){
               {p.type==='card' && p.closingDay && p.paymentDay && (
                 <span style={{color:'var(--ink-soft)',fontWeight:400,fontSize:12}}> · 마감 매월 {p.closingDay}일 → 결제 {p.paymentOffsetMonths?'익월':'당월'} {p.paymentDay}일</span>
               )}
+              {p.type==='transfer' && p.withdrawalDay && (
+                <span style={{color:'var(--ink-soft)',fontWeight:400,fontSize:12}}> · 매월 {p.withdrawalDay}일 출금</span>
+              )}
               {p.linkedAccount && (
                 <span style={{color:'var(--ink-soft)',fontWeight:400,fontSize:12}}> · 출금계좌: {p.linkedAccount}</span>
               )}
             </span>
-            <span className={"pill "+(p.type==='card'?'joint':'personal')}>{p.type==='card'?'카드':'현금'}</span>
+            <span className={"pill "+(p.type==='cash'?'personal':'joint')}>{p.type==='card'?'카드':p.type==='transfer'?'계좌이체':'현금'}</span>
             {p.id!=='cash' && (
               <React.Fragment>
                 <button className="btn-icon" onClick={()=>{setEditing(p);setShowModal(true);}}>수정</button>
@@ -2792,7 +2867,7 @@ function App(){
         {tab==='cashflow' && <CashFlow transactions={state.transactions} paymentMethods={state.paymentMethods} recurringExpenses={state.recurringExpenses} loans={state.loans} assets={state.assets} onAddAsset={addAsset} onEditAsset={editAsset}/>}
         {tab==='transactions' && <Transactions transactions={state.transactions} categories={state.categories} paymentMethods={state.paymentMethods} onAdd={addTx} onEdit={editTx} onDelete={deleteTx}/>}
         {tab==='recurring' && <RecurringExpenses recurringExpenses={state.recurringExpenses} categories={state.categories} paymentMethods={state.paymentMethods} transactions={state.transactions} onAdd={addRecurring} onEdit={editRecurring} onDelete={deleteRecurring} onPay={payRecurring} onMigrate={migrateInstallments}/>}
-        {tab==='loans' && <Loans loans={state.loans} onAdd={addLoan} onEdit={editLoan} onDelete={deleteLoan}/>}
+        {tab==='loans' && <Loans loans={state.loans} paymentMethods={state.paymentMethods} onAdd={addLoan} onEdit={editLoan} onDelete={deleteLoan}/>}
         {tab==='assets' && <Assets assets={state.assets} snapshots={state.assetSnapshots} onAdd={addAsset} onEdit={editAsset} onDelete={deleteAsset} onAddSnapshot={addAssetSnapshot}/>}
         {tab==='paymentMethods' && <PaymentMethods paymentMethods={state.paymentMethods} onAdd={addPM} onEdit={editPM} onDelete={deletePM}/>}
         {tab==='csv' && <CsvUpload categories={state.categories} paymentMethods={state.paymentMethods} onImport={importTx}/>}
